@@ -1,0 +1,2 @@
+[console_scripts]
+plaud = plaud_cli.cli:main

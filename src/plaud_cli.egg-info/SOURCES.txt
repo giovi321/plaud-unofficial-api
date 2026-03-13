@@ -1,0 +1,13 @@
+README.md
+pyproject.toml
+src/plaud_cli/__init__.py
+src/plaud_cli/api.py
+src/plaud_cli/cli.py
+src/plaud_cli/config.py
+src/plaud_cli/normalizer.py
+src/plaud_cli.egg-info/PKG-INFO
+src/plaud_cli.egg-info/SOURCES.txt
+src/plaud_cli.egg-info/dependency_links.txt
+src/plaud_cli.egg-info/entry_points.txt
+src/plaud_cli.egg-info/requires.txt
+src/plaud_cli.egg-info/top_level.txt

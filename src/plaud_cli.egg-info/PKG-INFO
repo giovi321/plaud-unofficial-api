@@ -1,0 +1,205 @@
+Metadata-Version: 2.4
+Name: plaud-cli
+Version: 0.1.0
+Summary: Unofficial command-line tool for the Plaud.ai API
+License: MIT
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: httpx>=0.27
+Requires-Dist: click>=8.1
+Requires-Dist: rich>=13.0
+Requires-Dist: keyring>=24.0
+Requires-Dist: python-dateutil>=2.9
+
+# plaud-cli
+
+Unofficial command-line tool for [plaud.ai](https://web.plaud.ai/).  
+Reverse-engineered from the Plaud web app — no official API exists.
+
+> **Disclaimer** – This project is not affiliated with or endorsed by Plaud.  
+> Use it only with your own account and in accordance with Plaud's Terms of Service.
+
+---
+
+## Features
+
+- **Token-based auth** – uses the same long-lived JWT stored in `localStorage` on `web.plaud.ai`
+- **Secure storage** – saves your token in the OS keychain (keyring) with a plain-file fallback
+- **List** recordings in a rich table
+- **View detail** – title, date, duration, summary, highlights, transcript
+- **Export** a single recording to Markdown, JSON, or plain text
+- **Sync** your entire library to a local directory
+- `--json` flag on most commands for scripting / piping
+
+---
+
+## Installation
+
+### From source (recommended)
+
+```bash
+pip install -e ".[dev]"
+# or just:
+pip install -r requirements.txt
+pip install -e .
+```
+
+### Requirements
+
+- Python ≥ 3.9
+- `httpx`, `click`, `rich`, `keyring`, `python-dateutil`
+
+---
+
+## Obtaining your token
+
+Plaud has no official API or developer portal. The token is a JWT stored in  
+`localStorage` when you use the Plaud web app.
+
+1. Open [web.plaud.ai](https://web.plaud.ai/) and log in.
+2. Open DevTools (`F12` / `Cmd+Opt+I`) → **Console** tab.
+3. Run:
+   ```js
+   localStorage.getItem("tokenstr")
+   ```
+4. Copy the full string (starts with `bearer eyJ…`).
+
+The token is long-lived (~10 months) but will eventually expire.
+
+---
+
+## Quick start
+
+```bash
+# Store your token (prompts if not given via --token)
+plaud login
+
+# Verify it works
+plaud whoami
+
+# List all recordings
+plaud list
+
+# Full detail for one recording
+plaud detail <file_id>
+
+# Export to Markdown
+plaud export <file_id> -o my-note.md
+
+# Bulk sync entire library to ./notes/
+plaud sync ./notes/
+```
+
+---
+
+## Commands
+
+### `plaud login`
+
+```
+plaud login [--token TEXT]
+```
+
+Prompts for your token and stores it in the OS keychain (falls back to  
+`~/.config/plaud-cli/config.json`).
+
+---
+
+### `plaud logout`
+
+Removes the stored token.
+
+---
+
+### `plaud whoami`
+
+Validates your token by calling the API.
+
+---
+
+### `plaud list`
+
+```
+plaud list [--json] [--limit N] [--no-trash]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--json` | off | Print raw JSON array |
+| `--limit N` | 0 (all) | Limit number of rows |
+| `--no-trash` | on | Hide trashed recordings |
+
+---
+
+### `plaud detail <FILE_ID>`
+
+```
+plaud detail <file_id> [--json] [--hydrate/--no-hydrate]
+```
+
+Shows title, date, duration, summary, highlights and transcript.  
+`--hydrate` (default on) fetches transcript/summary from signed URLs when  
+the detail endpoint omits them.
+
+---
+
+### `plaud export <FILE_ID>`
+
+```
+plaud export <file_id> [--format markdown|json|txt] [-o OUTPUT]
+```
+
+Exports a single recording.  Output goes to stdout unless `-o` is given.
+
+---
+
+### `plaud sync <OUTPUT_DIR>`
+
+```
+plaud sync ./notes/ [--format markdown|json|txt] [--since 2024-01-01]
+```
+
+Bulk-exports every recording (or only those newer than `--since`) into  
+`OUTPUT_DIR`.  File names follow the pattern `YYYY-MM-DD_<title>.<ext>`.
+
+---
+
+### `plaud config`
+
+```
+plaud config show
+plaud config set-api <URL>
+```
+
+Override the API base URL (default `https://api.plaud.ai`).
+
+---
+
+## Environment variables
+
+| Variable | Description |
+|----------|-------------|
+| `PLAUD_TOKEN` | Token override — skips keychain lookup |
+
+---
+
+## Project structure
+
+```
+src/plaud_cli/
+├── cli.py          # Click commands
+├── api.py          # HTTP client + hydration
+├── normalizer.py   # Payload normalization
+├── config.py       # Token / config storage
+└── __init__.py
+```
+
+---
+
+## Legal
+
+This tool is provided for **personal interoperability** purposes only —  
+enabling users to access their own data in ways the official app does not  
+expose.  The author is not affiliated with Plaud.  Reverse-engineering for  
+interoperability is permitted under EU Directive 2009/24/EC Art. 6 and  
+equivalent provisions in other jurisdictions.
