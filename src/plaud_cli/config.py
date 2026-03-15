@@ -6,6 +6,15 @@ import os
 from pathlib import Path
 from typing import Any
 
+# Set by the --config CLI switch on the root group before any subcommand runs.
+_override_config_path: Path | None = None
+
+
+def set_config_path(path: str | Path) -> None:
+    """Override the config file location for the lifetime of this process."""
+    global _override_config_path
+    _override_config_path = Path(path)
+
 
 def _config_dir() -> Path:
     xdg = os.environ.get("XDG_CONFIG_HOME")
@@ -15,6 +24,8 @@ def _config_dir() -> Path:
 
 
 def _config_file() -> Path:
+    if _override_config_path is not None:
+        return _override_config_path
     return _config_dir() / "config.yaml"
 
 
@@ -43,26 +54,25 @@ def get_token() -> str | None:
 
 
 def save_token(token: str) -> str:
-    """Persist the token to config.yaml. Returns 'file'."""
-    cfg = _load_config()
-    cfg["token"] = token
-    _save_config(cfg)
-    return "file"
+    """Persist the token to config.yaml. Returns the config file path."""
+    data = _load_config()
+    data["token"] = token
+    _save_config(data)
+    return str(_config_file())
 
 
 def delete_token() -> None:
     """Remove the token from config.yaml."""
-    cfg = _load_config()
-    cfg.pop("token", None)
-    _save_config(cfg)
+    data = _load_config()
+    data.pop("token", None)
+    _save_config(data)
 
 
 def get_api_base() -> str:
-    cfg = _load_config()
-    return cfg.get("api_base", "https://api.plaud.ai")
+    return _load_config().get("api_base", "https://api.plaud.ai")
 
 
 def set_api_base(url: str) -> None:
-    cfg = _load_config()
-    cfg["api_base"] = url.rstrip("/")
-    _save_config(cfg)
+    data = _load_config()
+    data["api_base"] = url.rstrip("/")
+    _save_config(data)

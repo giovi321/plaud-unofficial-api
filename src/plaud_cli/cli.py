@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import pathlib
+import re
 import sys
 from datetime import datetime, timezone
 from typing import Any
@@ -67,9 +69,21 @@ def _fmt_ts(ms: int) -> str:
 # ---------------------------------------------------------------------------
 
 @click.group()
-@click.version_option("0.1.0", prog_name="plaud")
-def main() -> None:
+@click.version_option("0.2.0", prog_name="plaud")
+@click.option(
+    "--config", "config_path",
+    type=click.Path(dir_okay=False),
+    default=None,
+    metavar="FILE",
+    help="Path to config YAML file. Overrides the default location "
+         "(~/.config/plaud-cli/config.yaml).",
+)
+@click.pass_context
+def main(ctx: click.Context, config_path: str | None) -> None:
     """Unofficial Plaud.ai CLI – manage recordings from the command line."""
+    ctx.ensure_object(dict)
+    if config_path:
+        cfg.set_config_path(config_path)
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +100,7 @@ def login(token: str) -> None:
         err_console.print("Token cannot be empty.")
         sys.exit(1)
     location = cfg.save_token(token)
-    console.print(f"[green]Token saved[/green] (stored in [bold]{location}[/bold]).")
+    console.print(f"[green]Token saved[/green] → [bold]{location}[/bold]")
 
 
 @main.command()
@@ -97,7 +111,7 @@ def logout() -> None:
 
 
 @main.command()
-@click.option("--token", envvar="PLAUD_TOKEN", default=None, hidden=True)
+@click.option("--token", default=None, hidden=True)
 def whoami(token: str | None) -> None:
     """Verify token by fetching the file list (prints count on success)."""
     tok = _require_token(token)
@@ -179,7 +193,7 @@ def config_init(force: bool) -> None:
 # ---------------------------------------------------------------------------
 
 @main.command("list")
-@click.option("--token", envvar="PLAUD_TOKEN", default=None, help="Override stored token.")
+@click.option("--token", default=None, help="Override stored token.")
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
 @click.option("--no-trash", is_flag=True, default=True, show_default=True,
               help="Hide trashed recordings.")
@@ -234,7 +248,7 @@ def list_files(token: str | None, as_json: bool, no_trash: bool, limit: int) -> 
 
 @main.command()
 @click.argument("file_id")
-@click.option("--token", envvar="PLAUD_TOKEN", default=None, help="Override stored token.")
+@click.option("--token", default=None, help="Override stored token.")
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
 @click.option("--hydrate/--no-hydrate", default=True, show_default=True,
               help="Fetch transcript/summary from signed URLs.")
@@ -288,7 +302,7 @@ EXPORT_FORMATS = ["markdown", "json", "txt"]
 
 @main.command()
 @click.argument("file_id")
-@click.option("--token", envvar="PLAUD_TOKEN", default=None, help="Override stored token.")
+@click.option("--token", default=None, help="Override stored token.")
 @click.option("--format", "fmt", type=click.Choice(EXPORT_FORMATS), default="markdown",
               show_default=True, help="Output format.")
 @click.option("--output", "-o", type=click.Path(), default=None,
@@ -377,27 +391,128 @@ def _render_txt(norm: dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# sync  (bulk export)
+# sync  (bulk export / folder synchronisation)
 # ---------------------------------------------------------------------------
+
+REGISTRY_FILENAME = ".plaud_registry.json"
+
+
+def _load_registry(dest: pathlib.Path) -> dict[str, Any]:
+    """Load the download registry from dest/.plaud_registry.json."""
+    path = dest / REGISTRY_FILENAME
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_registry(dest: pathlib.Path, registry: dict[str, Any]) -> None:
+    """Persist the download registry."""
+    path = dest / REGISTRY_FILENAME
+    path.write_text(json.dumps(registry, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _make_filename(norm: dict[str, Any], ext: str) -> str:
+    title = norm["title"] or norm["file_id"]
+    safe_title = re.sub(r'[\\/:*?"<>|]', "_", title)[:80]
+    date_str = ""
+    if norm["start_time_ms"]:
+        try:
+            dt = datetime.fromtimestamp(norm["start_time_ms"] / 1000, tz=timezone.utc)
+            date_str = dt.strftime("%Y-%m-%d_")
+        except Exception:
+            pass
+    return f"{date_str}{safe_title}.{ext}"
+
+
+def _render_content(norm: dict[str, Any], fmt: str) -> str:
+    if fmt == "json":
+        return json.dumps(norm, indent=2, ensure_ascii=False)
+    if fmt == "txt":
+        return _render_txt(norm)
+    return _render_markdown(norm)
+
 
 @main.command()
 @click.argument("output_dir", type=click.Path())
-@click.option("--token", envvar="PLAUD_TOKEN", default=None, help="Override stored token.")
+@click.option("--token", default=None, help="Override stored token.")
+@click.option(
+    "--mode",
+    type=click.Choice(["one-way", "two-way"]),
+    default="one-way",
+    show_default=True,
+    help=(
+        "Sync mode. "
+        "one-way: download missing/updated recordings from remote to local. "
+        "two-way: same as one-way, plus warn about local files whose recording "
+        "has been deleted from the remote."
+    ),
+)
 @click.option("--format", "fmt", type=click.Choice(EXPORT_FORMATS), default="markdown",
-              show_default=True)
-@click.option("--no-trash", is_flag=True, default=True, show_default=True)
-@click.option("--hydrate/--no-hydrate", default=True, show_default=True)
-@click.option("--since", default=None,
-              help="Only sync recordings newer than this ISO-8601 date (e.g. 2024-01-01).")
-def sync(output_dir: str, token: str | None, fmt: str, no_trash: bool, hydrate: bool,
-         since: str | None) -> None:
-    """Bulk-export all recordings to a directory."""
-    import pathlib
-    import re as _re
+              show_default=True, help="Output format for exported files.")
+@click.option("--no-trash", is_flag=True, default=True, show_default=True,
+              help="Skip trashed recordings.")
+@click.option("--hydrate/--no-hydrate", default=True, show_default=True,
+              help="Fetch transcript/summary from signed URLs.")
+@click.option(
+    "--since", default=None, metavar="DATE",
+    help="Only sync recordings newer than this ISO-8601 date (e.g. 2024-01-01).",
+)
+@click.option(
+    "--registry/--no-registry",
+    default=False,
+    show_default=True,
+    help=(
+        "Maintain a " + REGISTRY_FILENAME + " file in the output directory. "
+        "Tracks which file_ids have been downloaded so that moved or renamed "
+        "local files are not downloaded again."
+    ),
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Print what would be downloaded/warned about without writing any files.",
+)
+def sync(
+    output_dir: str,
+    token: str | None,
+    mode: str,
+    fmt: str,
+    no_trash: bool,
+    hydrate: bool,
+    since: str | None,
+    registry: bool,
+    dry_run: bool,
+) -> None:
+    """Synchronise a local folder with your Plaud recordings.
 
+    \b
+    Modes
+    -----
+    one-way   Download recordings that are not yet present locally.
+              A file is considered present if its file_id appears in the
+              registry (--registry) OR if a file with the expected name
+              already exists in the output directory.
+    two-way   Same as one-way, but also reports local files (tracked in
+              the registry) whose recording has since been deleted from
+              the remote.  No local files are deleted automatically.
+
+    \b
+    Registry
+    --------
+    When --registry is enabled a hidden JSON file (.plaud_registry.json)
+    is kept inside the output directory.  It maps each downloaded file_id
+    to the filename and download timestamp so that renamed or moved files
+    are not downloaded again.
+    """
     tok = _require_token(token)
     dest = pathlib.Path(output_dir)
-    dest.mkdir(parents=True, exist_ok=True)
+
+    if not dry_run:
+        dest.mkdir(parents=True, exist_ok=True)
 
     since_ms: int | None = None
     if since:
@@ -410,58 +525,124 @@ def sync(output_dir: str, token: str | None, fmt: str, no_trash: bool, hydrate: 
 
     with _make_client(tok) as client:
         try:
-            files = client.list_files()
+            all_files = client.list_files()
         except plaud_api.PlaudApiError as exc:
             err_console.print(f"[bold red]{exc.category}:[/bold red] {exc}")
             sys.exit(1)
 
         if no_trash:
-            files = [f for f in files if not f.get("is_trash")]
+            all_files = [f for f in all_files if not f.get("is_trash")]
 
         if since_ms is not None:
-            files = [f for f in files if (f.get("start_time") or 0) > since_ms]
+            all_files = [f for f in all_files if (f.get("start_time") or 0) > since_ms]
+
+        remote_ids: set[str] = {
+            rec.get("file_id") or rec.get("id", "")
+            for rec in all_files
+        } - {""}
 
         ext_map = {"markdown": "md", "json": "json", "txt": "txt"}
         ext = ext_map[fmt]
 
-        console.print(f"Syncing [bold]{len(files)}[/bold] recording(s) → {dest}/")
+        reg: dict[str, Any] = _load_registry(dest) if registry and dest.exists() else {}
 
-        ok = 0
-        failed = 0
-        for rec in files:
-            file_id = rec.get("file_id") or rec.get("id")
-            if not file_id:
+        # ── two-way: detect local orphans ────────────────────────────────
+        if mode == "two-way" and registry:
+            orphans = [
+                (fid, entry)
+                for fid, entry in reg.items()
+                if fid not in remote_ids
+            ]
+            if orphans:
+                console.print(
+                    f"[yellow][two-way][/yellow] "
+                    f"{len(orphans)} local file(s) no longer exist on remote:"
+                )
+                for fid, entry in orphans:
+                    console.print(
+                        f"  [yellow]![/yellow] {entry.get('filename', fid)} "
+                        f"[dim](file_id: {fid})[/dim]"
+                    )
+            else:
+                console.print("[dim][two-way] No orphaned local files found.[/dim]")
+
+        # ── determine which files to download ────────────────────────────
+        to_download = []
+        for rec in all_files:
+            fid = rec.get("file_id") or rec.get("id")
+            if not fid:
                 continue
-            try:
-                raw = client.get_file_detail_hydrated(file_id) if hydrate else client.get_file_detail(file_id)
-                norm = normalizer.normalize(raw)
-
-                title = norm["title"] or file_id
-                safe_title = _re.sub(r'[\\/:*?"<>|]', "_", title)[:80]
+            if registry and fid in reg:
+                continue  # already downloaded (regardless of current filename)
+            # Fall back to name-based check when registry is disabled
+            # We need the normalised name, so do a quick name estimation
+            # from the list record (no detail fetch needed for the check).
+            if not registry:
+                start_ms = rec.get("start_time", 0) or 0
+                title_raw = (
+                    rec.get("file_name") or rec.get("filename") or
+                    rec.get("title") or fid
+                )
+                safe = re.sub(r'[\\/:*?"<>|]', "_", title_raw)[:80]
                 date_str = ""
-                if norm["start_time_ms"]:
+                if start_ms:
                     try:
-                        dt = datetime.fromtimestamp(norm["start_time_ms"] / 1000, tz=timezone.utc)
+                        dt = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc)
                         date_str = dt.strftime("%Y-%m-%d_")
                     except Exception:
                         pass
-                filename = f"{date_str}{safe_title}.{ext}"
+                candidate = dest / f"{date_str}{safe}.{ext}"
+                if candidate.exists():
+                    continue
+            to_download.append(rec)
+
+        console.print(
+            f"Syncing [bold]{len(to_download)}[/bold] / {len(all_files)} "
+            f"recording(s) → {dest}/ "
+            f"[dim](mode={mode}, format={fmt}{'  dry-run' if dry_run else ''})[/dim]"
+        )
+
+        if dry_run and to_download:
+            console.print("[dim]Files that would be downloaded:[/dim]")
+
+        ok = 0
+        failed = 0
+        now_iso = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        for rec in to_download:
+            fid = rec.get("file_id") or rec.get("id")
+            try:
+                raw = (
+                    client.get_file_detail_hydrated(fid)
+                    if hydrate else client.get_file_detail(fid)
+                )
+                norm = normalizer.normalize(raw)
+                filename = _make_filename(norm, ext)
                 out_path = dest / filename
 
-                if fmt == "json":
-                    content = json.dumps(norm, indent=2, ensure_ascii=False)
-                elif fmt == "txt":
-                    content = _render_txt(norm)
-                else:
-                    content = _render_markdown(norm)
+                if dry_run:
+                    console.print(f"  [dim]→[/dim] {filename}")
+                    ok += 1
+                    continue
 
+                content = _render_content(norm, fmt)
                 out_path.write_text(content, encoding="utf-8")
+
+                if registry:
+                    reg[fid] = {"filename": filename, "downloaded_at": now_iso}
+
                 console.print(f"  [green]✓[/green] {filename}")
                 ok += 1
             except plaud_api.PlaudApiError as exc:
-                console.print(f"  [red]✗[/red] {file_id}: {exc}")
+                console.print(f"  [red]✗[/red] {fid}: {exc}")
                 failed += 1
 
-    console.print(
-        f"\n[bold]Done.[/bold] {ok} exported, {failed} failed."
-    )
+        if registry and not dry_run:
+            _save_registry(dest, reg)
+
+    summary_parts = [f"{ok} downloaded"]
+    if failed:
+        summary_parts.append(f"[red]{failed} failed[/red]")
+    if dry_run:
+        summary_parts.append("[yellow]dry-run – nothing written[/yellow]")
+    console.print(f"\n[bold]Done.[/bold] {', '.join(summary_parts)}")

@@ -19,6 +19,7 @@
 5. [Configuration](#configuration)
 6. [Quick start](#quick-start)
 7. [Commands reference](#commands-reference)
+   - [Global options](#global-options)
    - [login](#plaud-login)
    - [logout](#plaud-logout)
    - [whoami](#plaud-whoami)
@@ -29,11 +30,10 @@
    - [config show](#plaud-config-show)
    - [config init](#plaud-config-init)
    - [config set-api](#plaud-config-set-api-url)
-8. [Environment variables](#environment-variables)
-9. [Project structure](#project-structure)
-10. [How the API works](#how-the-api-works)
-11. [Legal](#legal)
-12. [License](#license)
+8. [Project structure](#project-structure)
+9. [How the API works](#how-the-api-works)
+10. [Legal](#legal)
+11. [License](#license)
 
 ---
 
@@ -41,10 +41,12 @@
 
 - **Token-based auth** — uses the long-lived JWT stored in `localStorage` on `web.plaud.ai`
 - **YAML config file** — token and settings live in a human-editable `config.yaml`; no keychain required
+- **`--config FILE`** global switch — point any command at an alternative config file
 - **List** all recordings in a formatted table
 - **Detail view** — title, date, duration, AI summary, highlights, full transcript with speaker labels
 - **Export** a single recording to Markdown, JSON, or plain text
-- **Bulk sync** your entire library to a local directory, with optional `--since` date filter
+- **Folder sync** — one-way (remote → local) or two-way (+ orphan detection) with `--dry-run` support
+- **Download registry** — optional `.plaud_registry.json` sidecar tracks what was downloaded so moved/renamed files are never re-fetched
 - **`--json` flag** on most commands for easy scripting and piping
 - **Content hydration** — fetches transcript and summary from Plaud's signed URLs when the detail endpoint omits them
 
@@ -104,7 +106,9 @@ All settings are stored in a single YAML file:
 | Linux / macOS | `~/.config/plaud-cli/config.yaml` |
 | Windows | `%USERPROFILE%\.config\plaud-cli\config.yaml` |
 
-> Override the directory by setting the `XDG_CONFIG_HOME` environment variable.
+> You can point any command at a different file using the global `--config FILE` switch
+> (see [Global options](#global-options)), or override the base directory with the
+> `XDG_CONFIG_HOME` environment variable.
 
 ### Config file format
 
@@ -154,13 +158,41 @@ plaud detail <file_id>
 # 5. Export a recording to Markdown
 plaud export <file_id> -o my-note.md
 
-# 6. Bulk-export your entire library
+# 6. Sync your entire library (one-way, skips already-present files)
 plaud sync ./notes/
+
+# 7. Sync with registry + two-way orphan detection
+plaud sync ./notes/ --mode two-way --registry
+
+# 8. Use an alternative config file
+plaud --config ~/work-plaud.yaml list
 ```
 
 ---
 
 ## Commands reference
+
+### Global options
+
+These options are placed **before** the subcommand name and apply to every command:
+
+```
+plaud [OPTIONS] COMMAND [ARGS]...
+```
+
+| Option | Description |
+|--------|-------------|
+| `--config FILE` | Use this YAML file instead of the default `config.yaml` location. The file is created by `config init` or `login` if it does not exist yet. |
+| `--version` | Print the version and exit. |
+| `--help` | Show help and exit. |
+
+**Example — use a project-specific config:**
+```bash
+plaud --config ./project.yaml login
+plaud --config ./project.yaml sync ./notes/
+```
+
+---
 
 ### `plaud login`
 
@@ -309,28 +341,83 @@ Speaker A: Good morning everyone...
 plaud sync [OPTIONS] OUTPUT_DIR
 ```
 
-Bulk-exports all recordings to a directory. Each recording is saved as a
-separate file named `YYYY-MM-DD_<title>.<ext>`.
+Synchronises a local folder with your Plaud recordings. Each recording is
+saved as a separate file named `YYYY-MM-DD_<title>.<ext>`.
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--token TEXT` | config | Override stored token |
+| `--mode` | `one-way` | Sync mode — see below |
 | `--format` | `markdown` | Output format: `markdown`, `json`, or `txt` |
 | `--no-trash` | on | Skip trashed recordings |
 | `--hydrate / --no-hydrate` | hydrate | Fetch transcript/summary from signed URLs |
 | `--since DATE` | (all) | Only sync recordings newer than this ISO-8601 date |
+| `--registry / --no-registry` | off | Enable the download registry (see below) |
+| `--dry-run` | off | Print what would be downloaded without writing anything |
+
+#### Sync modes
+
+**`--mode one-way`** *(default)*
+
+Downloads recordings that are not yet present locally. A recording is
+considered present if:
+- its `file_id` already appears in the registry (`--registry`), **or**
+- a file with the expected name already exists in the output directory
+  (when `--no-registry`).
+
+Nothing is ever deleted locally.
+
+**`--mode two-way`**
+
+Same download behaviour as `one-way`, but additionally checks the registry
+for local files whose recording has since been **deleted from the remote**.
+Those files are reported as orphans — no local files are deleted
+automatically; you decide what to do with them.
+
+> Two-way orphan detection requires `--registry` to be enabled.
+> Without a registry there is no reliable way to map local filenames back
+> to remote `file_id`s.
+
+#### Download registry
+
+When `--registry` is enabled, `sync` maintains a hidden JSON file
+(`.plaud_registry.json`) inside the output directory. It records the
+`file_id`, local filename, and download timestamp for every file that has
+been written.
+
+```json
+{
+  "abc123def456": {
+    "filename": "2024-11-03_Team standup.md",
+    "downloaded_at": "2024-11-04T08:00:00Z"
+  }
+}
+```
+
+Because the lookup is by `file_id`, the file can be freely **renamed or
+moved** inside the output directory without triggering a re-download.
 
 **Examples:**
 
 ```bash
-# Sync entire library as Markdown
+# Basic one-way sync (name-based duplicate check)
 plaud sync ./notes/
+
+# One-way sync with registry (handles renames)
+plaud sync ./notes/ --registry
+
+# Two-way sync — also warn about recordings deleted from remote
+plaud sync ./notes/ --mode two-way --registry
+
+# Preview what would be downloaded without writing anything
+plaud sync ./notes/ --dry-run
+plaud sync ./notes/ --mode two-way --registry --dry-run
 
 # Sync only recordings from 2024 onwards as plain text
 plaud sync ./archive/ --format txt --since 2024-01-01
 
 # Sync as JSON (useful for further processing)
-plaud sync ./json-export/ --format json
+plaud sync ./json-export/ --format json --registry
 ```
 
 ---
@@ -382,15 +469,6 @@ Useful if Plaud changes their API domain or for local testing.
 ```bash
 plaud config set-api https://api.plaud.ai
 ```
-
----
-
-## Environment variables
-
-| Variable | Description |
-|----------|-------------|
-| `PLAUD_TOKEN` | Token value — takes precedence over `config.yaml` on all commands that accept `--token` |
-| `XDG_CONFIG_HOME` | Override the base directory for `config.yaml` (default: `~/.config`) |
 
 ---
 
