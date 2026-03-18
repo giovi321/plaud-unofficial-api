@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "plaud-cli"
-version = "0.2.0"
+version = "0.3.1"
 description = "Unofficial command-line tool for the Plaud.ai API"
 readme = "README.md"
 requires-python = ">=3.9"
