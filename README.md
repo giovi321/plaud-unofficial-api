@@ -47,6 +47,7 @@
 - **Export** a single recording to Markdown, JSON, or plain text
 - **Folder sync** — one-way (remote → local) or two-way (+ orphan detection) with `--dry-run` support
 - **Download registry** — optional `.plaud_registry.json` sidecar tracks what was downloaded so moved/renamed files are never re-fetched
+- **`--require-summary` flag** — skip recordings that don't have AI-generated summaries yet
 - **`--json` flag** on most commands for easy scripting and piping
 - **Content hydration** — fetches transcript and summary from Plaud's signed URLs when the detail endpoint omits them
 
@@ -354,6 +355,7 @@ saved as a separate file named `YYYY-MM-DD_<title>.<ext>`.
 | `--since DATE` | (all) | Only sync recordings newer than this ISO-8601 date |
 | `--registry / --no-registry` | off | Enable the download registry (see below) |
 | `--dry-run` | off | Print what would be downloaded without writing anything |
+| `--require-summary` | off | Skip recordings that don't have an AI-generated summary yet |
 
 #### Sync modes
 
@@ -418,6 +420,12 @@ plaud sync ./archive/ --format txt --since 2024-01-01
 
 # Sync as JSON (useful for further processing)
 plaud sync ./json-export/ --format json --registry
+
+# Only sync recordings that have AI summaries generated
+plaud sync ./notes/ --require-summary
+
+# Combine with other options
+plaud sync ./notes/ --require-summary --registry --mode two-way --dry-run
 ```
 
 ---
