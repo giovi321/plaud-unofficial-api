@@ -76,13 +76,16 @@ def _extract_summary(detail: dict[str, Any]) -> str:
         if "summary" in item_type or "abstract" in item_type:
             content = _first_str([item.get("content"), item.get("value"), item.get("text")])
             if content:
-                return content
+                result = _unwrap_summary_text(content)
+                if result:
+                    return result
         data_id = _first_str([item.get("data_id")]).lower()
         if data_id.startswith("auto_sum:") or "summary" in data_id:
             content = _first_str([item.get("data_content"), item.get("content"), item.get("value"), item.get("text")])
-            cleaned = _strip_markup(content)
-            if cleaned:
-                return cleaned
+            if content:
+                result = _unwrap_summary_text(content)
+                if result:
+                    return result
 
     return ""
 
