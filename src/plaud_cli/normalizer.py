@@ -34,6 +34,20 @@ def _extract_summary(detail: dict[str, Any]) -> str:
         detail.get("ai_notes", {}).get("abstract") if isinstance(detail.get("ai_notes"), dict) else None,
     ])
     if direct:
+        try:
+            parsed = json.loads(direct)
+            if isinstance(parsed, dict):
+                for key in ("summary", "abstract", "content", "text", "ai_content"):
+                    v = parsed.get(key)
+                    if isinstance(v, str) and v.strip():
+                        return v.strip()
+                    if isinstance(v, dict):
+                        for sub_key in ("summary", "abstract", "content", "text"):
+                            sv = v.get(sub_key)
+                            if isinstance(sv, str) and sv.strip():
+                                return sv.strip()
+        except Exception:
+            pass
         return direct
 
     for item in (detail.get("pre_download_content_list") or []):

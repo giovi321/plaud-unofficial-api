@@ -242,7 +242,14 @@ def _apply_summary(detail: dict[str, Any], content: Any) -> None:
     for key in ("ai_content", "summary", "abstract", "content", "text"):
         v = content.get(key)
         if isinstance(v, str) and v.strip():
-            detail["summary"] = v.strip()
+            maybe = _parse_maybe_json(v.strip())
+            if isinstance(maybe, dict):
+                _apply_summary(detail, maybe)
+            else:
+                detail["summary"] = maybe
+            break
+        if isinstance(v, dict):
+            _apply_summary(detail, v)
             break
     if not isinstance(detail.get("ai_content"), dict):
         detail["ai_content"] = {}
