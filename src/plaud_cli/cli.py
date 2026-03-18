@@ -476,6 +476,12 @@ def _render_content(norm: dict[str, Any], fmt: str) -> str:
     default=False,
     help="Print what would be downloaded/warned about without writing any files.",
 )
+@click.option(
+    "--require-summary",
+    is_flag=True,
+    default=False,
+    help="Skip recordings for which no summary has been generated yet.",
+)
 def sync(
     output_dir: str,
     token: str | None,
@@ -486,6 +492,7 @@ def sync(
     since: str | None,
     registry: bool,
     dry_run: bool,
+    require_summary: bool,
 ) -> None:
     """Synchronise a local folder with your Plaud recordings.
 
@@ -606,6 +613,7 @@ def sync(
             console.print("[dim]Files that would be downloaded:[/dim]")
 
         ok = 0
+        skipped = 0
         failed = 0
         now_iso = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -617,6 +625,12 @@ def sync(
                     if hydrate else client.get_file_detail(fid)
                 )
                 norm = normalizer.normalize(raw)
+
+                if require_summary and not norm["summary"]:
+                    console.print(f"  [yellow]–[/yellow] {fid}: skipped (no summary yet)")
+                    skipped += 1
+                    continue
+
                 filename = _make_filename(norm, ext)
                 out_path = dest / filename
 
@@ -641,6 +655,8 @@ def sync(
             _save_registry(dest, reg)
 
     summary_parts = [f"{ok} downloaded"]
+    if skipped:
+        summary_parts.append(f"[yellow]{skipped} skipped (no summary)[/yellow]")
     if failed:
         summary_parts.append(f"[red]{failed} failed[/red]")
     if dry_run:
