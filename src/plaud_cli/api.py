@@ -190,13 +190,22 @@ def _has_transcript(detail: dict[str, Any]) -> bool:
 
 
 def _has_summary(detail: dict[str, Any]) -> bool:
-    if isinstance(detail.get("summary"), str) and detail["summary"].strip():
-        return True
+    import json as _json
+    summary = detail.get("summary")
+    if isinstance(summary, str) and summary.strip():
+        try:
+            _json.loads(summary.strip())
+        except Exception:
+            return True
     ai = detail.get("ai_content")
     if isinstance(ai, dict):
         for key in ("summary", "abstract", "ai_content"):
-            if isinstance(ai.get(key), str) and ai[key].strip():
-                return True
+            v = ai.get(key)
+            if isinstance(v, str) and v.strip():
+                try:
+                    _json.loads(v.strip())
+                except Exception:
+                    return True
     return False
 
 
@@ -229,13 +238,15 @@ def _parse_maybe_json(value: str) -> Any:
         return value
 
 
-def _apply_summary(detail: dict[str, Any], content: Any) -> None:
+def _apply_summary(detail: dict[str, Any], content: Any, _depth: int = 0) -> None:
+    if _depth > 6:
+        return
     if isinstance(content, str):
         parsed = _parse_maybe_json(content.strip())
         if isinstance(parsed, str):
             detail["summary"] = parsed
             return
-        _apply_summary(detail, parsed)
+        _apply_summary(detail, parsed, _depth + 1)
         return
     if not isinstance(content, dict):
         return
@@ -244,12 +255,12 @@ def _apply_summary(detail: dict[str, Any], content: Any) -> None:
         if isinstance(v, str) and v.strip():
             maybe = _parse_maybe_json(v.strip())
             if isinstance(maybe, dict):
-                _apply_summary(detail, maybe)
-            else:
+                _apply_summary(detail, maybe, _depth + 1)
+            elif isinstance(maybe, str):
                 detail["summary"] = maybe
             break
         if isinstance(v, dict):
-            _apply_summary(detail, v)
+            _apply_summary(detail, v, _depth + 1)
             break
     if not isinstance(detail.get("ai_content"), dict):
         detail["ai_content"] = {}

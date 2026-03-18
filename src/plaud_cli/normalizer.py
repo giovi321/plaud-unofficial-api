@@ -26,29 +26,48 @@ def _as_nonneg_int(value: Any) -> int:
     return 0
 
 
+_SUMMARY_KEYS = ("summary", "abstract", "content", "text", "ai_content", "note", "body")
+
+
+def _unwrap_summary_text(value: Any, _depth: int = 0) -> str:
+    """Recursively unwrap a possibly JSON-encoded summary into plain text."""
+    if _depth > 6:
+        return ""
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return ""
+        try:
+            parsed = json.loads(stripped)
+        except Exception:
+            return stripped
+        result = _unwrap_summary_text(parsed, _depth + 1)
+        return result if result else stripped
+    if isinstance(value, dict):
+        for key in _SUMMARY_KEYS:
+            v = value.get(key)
+            if v is None:
+                continue
+            result = _unwrap_summary_text(v, _depth + 1)
+            if result:
+                return result
+    return ""
+
+
 def _extract_summary(detail: dict[str, Any]) -> str:
-    direct = _first_str([
+    candidates: list[Any] = [
         detail.get("summary"),
         detail.get("ai_content", {}).get("summary") if isinstance(detail.get("ai_content"), dict) else None,
+        detail.get("ai_content") if isinstance(detail.get("ai_content"), str) else None,
         detail.get("ai_notes", {}).get("summary") if isinstance(detail.get("ai_notes"), dict) else None,
         detail.get("ai_notes", {}).get("abstract") if isinstance(detail.get("ai_notes"), dict) else None,
-    ])
-    if direct:
-        try:
-            parsed = json.loads(direct)
-            if isinstance(parsed, dict):
-                for key in ("summary", "abstract", "content", "text", "ai_content"):
-                    v = parsed.get(key)
-                    if isinstance(v, str) and v.strip():
-                        return v.strip()
-                    if isinstance(v, dict):
-                        for sub_key in ("summary", "abstract", "content", "text"):
-                            sv = v.get(sub_key)
-                            if isinstance(sv, str) and sv.strip():
-                                return sv.strip()
-        except Exception:
-            pass
-        return direct
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        result = _unwrap_summary_text(candidate)
+        if result:
+            return result
 
     for item in (detail.get("pre_download_content_list") or []):
         if not isinstance(item, dict):
