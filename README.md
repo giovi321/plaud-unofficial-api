@@ -2,8 +2,7 @@
 
 Unofficial command-line tool for [plaud.ai](https://web.plaud.ai/) — reverse-engineered from the Plaud web app.
 
-[![Python](https://img.shields.io/badge/python-%3E%3D3.9-blue)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 
 > **Disclaimer** – This project is not affiliated with or endorsed by Plaud AI.
 > Use it solely with your own account and in compliance with Plaud's Terms of Service.
