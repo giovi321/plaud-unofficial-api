@@ -46,7 +46,9 @@ Unofficial command-line tool for [plaud.ai](https://web.plaud.ai/) — reverse-e
 - **Export** a single recording to Markdown, JSON, or plain text
 - **Folder sync** — one-way (remote → local) or two-way (+ orphan detection) with `--dry-run` support
 - **Download registry** — optional `.plaud_registry.json` sidecar tracks what was downloaded so moved/renamed files are never re-fetched
-- **`--require-summary` flag** — skip recordings that don't have AI-generated summaries yet
+- **`--only-ready` flag** — skip recordings that have no AI-generated content yet (no summary, highlights, or transcript)
+- **`--include` flag** — choose exactly which content types to download: `transcript`, `summary`, `highlights`, `recording` (repeatable, works on `export` and `sync`)
+- **Transcript is always plain text** — the `--format` option only applies to summary and highlights; transcript is always saved as a separate `.txt` file
 - **`--json` flag** on most commands for easy scripting and piping
 - **Content hydration** — fetches transcript and summary from Plaud's signed URLs when the detail endpoint omits them
 
@@ -272,24 +274,47 @@ Exports a single recording to a file or stdout.
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--token TEXT` | config | Override stored token |
-| `--format` | `markdown` | Output format: `markdown`, `json`, or `txt` |
-| `-o / --output PATH` | stdout | Write to this file instead of stdout |
+| `--format` | `markdown` | Output format for summary and highlights: `markdown`, `json`, or `txt`. Transcript is always plain text. |
+| `-o / --output PATH` | stdout | Output file path (base name). When `-o` is given, transcript is written to a separate `_transcript.txt` file with the same base name. |
 | `--hydrate / --no-hydrate` | hydrate | Fetch transcript/summary from signed URLs |
+| `--include TYPE` | all text | Content to include. Repeatable. Choices: `transcript`, `summary`, `highlights`, `recording`. Defaults to all text types. |
+
+> **Note on transcript format:** Plaud does not provide structured/formatted
+> transcripts, so the `--format` option only affects summary and highlights.
+> Transcript is always saved as plain text (`.txt`). When exporting to a file,
+> transcript is written as a separate `<basename>_transcript.txt` alongside the
+> summary/highlights file.
+
+When `--include recording` is specified, the audio file is downloaded alongside
+the text export. The recording is saved with the same base name but an audio
+extension (`.ogg`, `.mp3`, `.wav`, `.m4a`).
 
 **Examples:**
 
 ```bash
-# Export to Markdown file
+# Export summary + highlights to Markdown, transcript to .txt
 plaud export abc123 -o standup-2024-11-03.md
+# → standup-2024-11-03.md          (summary + highlights in Markdown)
+# → standup-2024-11-03_transcript.txt  (transcript as plain text)
 
 # Export as JSON to stdout (useful for piping)
 plaud export abc123 --format json | jq '.summary'
 
-# Export as plain text
-plaud export abc123 --format txt -o standup.txt
+# Export only the transcript (plain text to stdout)
+plaud export abc123 --include transcript
+
+# Export only summary + highlights (no transcript)
+plaud export abc123 --include summary --include highlights
+
+# Export everything including the audio recording
+plaud export abc123 --include transcript --include summary --include highlights --include recording -o note.md
+# → note.md, note_transcript.txt, note.ogg
+
+# Export only the recording file
+plaud export abc123 --include recording
 ```
 
-**Markdown output format:**
+**Markdown output format** (summary and highlights only):
 
 ```markdown
 ---
@@ -306,9 +331,6 @@ duration: 4m 32s
 ## Highlights
 - Point one
 - Point two
-
-## Transcript
-Speaker A: Good morning everyone...
 ```
 
 ### `plaud sync <OUTPUT_DIR>`
@@ -324,13 +346,24 @@ saved as a separate file named `YYYY-MM-DD_<title>.<ext>`.
 |--------|---------|-------------|
 | `--token TEXT` | config | Override stored token |
 | `--mode` | `one-way` | Sync mode — see below |
-| `--format` | `markdown` | Output format: `markdown`, `json`, or `txt` |
+| `--format` | `markdown` | Output format for summary and highlights: `markdown`, `json`, or `txt`. Transcript is always plain text. |
 | `--no-trash` | on | Skip trashed recordings |
 | `--hydrate / --no-hydrate` | hydrate | Fetch transcript/summary from signed URLs |
 | `--since DATE` | (all) | Only sync recordings newer than this ISO-8601 date |
 | `--registry / --no-registry` | off | Enable the download registry (see below) |
 | `--dry-run` | off | Print what would be downloaded without writing anything |
-| `--require-summary` | off | Skip recordings that don't have an AI-generated summary yet |
+| `--only-ready` | off | Skip recordings that have no AI-generated content yet (no summary, highlights, or transcript) |
+| `--include TYPE` | all text | Content to include. Repeatable. Choices: `transcript`, `summary`, `highlights`, `recording`. Defaults to all text types. |
+
+> **Note on transcript format:** The `--format` option only affects summary and
+> highlights. Transcript is always saved as a separate plain-text `.txt` file.
+> When both summary/highlights and transcript are included, the transcript file
+> uses the extension `.transcript.txt` to avoid name collisions (e.g.
+> `2024-11-03_Meeting.md` + `2024-11-03_Meeting.transcript.txt`).
+> When transcript is the only text content, it is saved as a plain `.txt` file.
+
+When `--include recording` is specified, the audio file for each recording is
+downloaded alongside the text export into the same output directory.
 
 #### Sync modes
 
@@ -396,11 +429,25 @@ plaud sync ./archive/ --format txt --since 2024-01-01
 # Sync as JSON (useful for further processing)
 plaud sync ./json-export/ --format json --registry
 
-# Only sync recordings that have AI summaries generated
-plaud sync ./notes/ --require-summary
+# Only sync recordings that have AI-generated content
+plaud sync ./notes/ --only-ready
+
+# Sync only transcripts (saved as .txt files)
+plaud sync ./notes/ --include transcript
+
+# Sync summary (Markdown) + transcript (.txt) side by side
+plaud sync ./notes/ --include summary --include transcript
+# → 2024-11-03_Meeting.md  (summary in Markdown)
+# → 2024-11-03_Meeting.transcript.txt  (transcript as plain text)
+
+# Sync transcripts and audio recordings
+plaud sync ./notes/ --include transcript --include recording
+
+# Sync everything including audio files
+plaud sync ./notes/ --include transcript --include summary --include highlights --include recording
 
 # Combine with other options
-plaud sync ./notes/ --require-summary --registry --mode two-way --dry-run
+plaud sync ./notes/ --only-ready --registry --mode two-way --dry-run
 ```
 
 ### `plaud config show`

@@ -142,6 +142,31 @@ class PlaudClient:
         detail = self.get_file_detail(file_id)
         return self._hydrate(detail)
 
+    def download_recording(self, detail: dict[str, Any]) -> tuple[bytes, str]:
+        """Download the recording audio file. Returns (bytes, suggested_extension)."""
+        link = _pick_recording_link(detail)
+        if not link:
+            raise PlaudApiError("not_found", "No recording download link found for this file.")
+        try:
+            resp = self._http.get(link)
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise PlaudApiError("network", f"HTTP {exc.response.status_code}") from exc
+        except httpx.RequestError as exc:
+            raise PlaudApiError("network", f"Network error: {exc}") from exc
+        content_type = resp.headers.get("content-type", "")
+        if "ogg" in content_type or link.endswith(".ogg"):
+            ext = "ogg"
+        elif "wav" in content_type or link.endswith(".wav"):
+            ext = "wav"
+        elif "mp3" in content_type or link.endswith(".mp3"):
+            ext = "mp3"
+        elif "mp4" in content_type or "m4a" in content_type or link.endswith(".m4a"):
+            ext = "m4a"
+        else:
+            ext = "ogg"
+        return resp.content, ext
+
     def _hydrate(self, detail: dict[str, Any]) -> dict[str, Any]:
         """Best-effort: fetch transcript and summary from content_list signed URLs."""
         result = dict(detail)
@@ -223,6 +248,27 @@ def _pick_content_link(detail: dict[str, Any], data_type: str) -> str:
                 item_type = v.strip().lower()
                 break
         if item_type == data_type.lower():
+            for k in ("data_link", "link", "url"):
+                v = item.get(k)
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+    return ""
+
+
+def _pick_recording_link(detail: dict[str, Any]) -> str:
+    content_list = detail.get("content_list", [])
+    if not isinstance(content_list, list):
+        return ""
+    for item in content_list:
+        if not isinstance(item, dict):
+            continue
+        item_type = ""
+        for k in ("data_type", "type", "label", "name"):
+            v = item.get(k)
+            if isinstance(v, str) and v.strip():
+                item_type = v.strip().lower()
+                break
+        if item_type in ("recording", "record", "audio", "raw_record"):
             for k in ("data_link", "link", "url"):
                 v = item.get(k)
                 if isinstance(v, str) and v.strip():
