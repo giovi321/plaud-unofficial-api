@@ -300,7 +300,7 @@ def _print_detail(norm: dict[str, Any]) -> None:
 EXPORT_FORMATS = ["markdown", "json", "txt"]
 CONTENT_TYPES = ["transcript", "summary", "highlights", "recording"]
 ALL_TEXT_TYPES = {"transcript", "summary", "highlights"}
-FORMATTED_TYPES = {"summary", "highlights"}
+FORMATTED_TYPES = {"summary", "highlights", "transcript"}
 
 
 @main.command()
@@ -375,7 +375,7 @@ def export(file_id: str, token: str | None, fmt: str, output: str | None,
         else:
             click.echo(rendered)
 
-    if want_transcript and norm["transcript"]:
+    if want_transcript and "transcript" not in formatted_includes and norm["transcript"]:
         transcript_text = norm["transcript"]
         if output:
             transcript_path = base_dir / f"{base}_transcript.txt"
@@ -430,6 +430,12 @@ def _render_markdown(norm: dict[str, Any], includes: set[str] | None = None) -> 
             lines.append(f"- {h}")
         lines.append("")
 
+    if "transcript" in includes and norm["transcript"]:
+        lines.append("## Transcript")
+        lines.append("")
+        lines.append(norm["transcript"])
+        lines.append("")
+
     return "\n".join(lines)
 
 
@@ -451,6 +457,8 @@ def _render_txt(norm: dict[str, Any], includes: set[str] | None = None) -> str:
         for h in norm["highlights"]:
             lines.append(f"  * {h}")
         lines.append("")
+    if "transcript" in includes and norm["transcript"]:
+        lines += ["TRANSCRIPT", "----------", norm["transcript"], ""]
     return "\n".join(lines)
 
 
@@ -725,7 +733,7 @@ def sync(
                     out_path.write_text(content, encoding="utf-8")
                     console.print(f"  [green]✓[/green] {filename}")
 
-                if want_transcript and norm["transcript"]:
+                if want_transcript and "transcript" not in formatted_includes and norm["transcript"]:
                     transcript_filename = _make_filename(norm, "txt") if not formatted_includes else _make_filename(norm, "transcript.txt")
                     transcript_path = dest / transcript_filename
                     transcript_path.write_text(norm["transcript"], encoding="utf-8")

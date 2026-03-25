@@ -77,6 +77,26 @@ def _extract_detail_payload(data: Any) -> dict[str, Any]:
     return data
 
 
+_BROWSER_HEADERS = {
+    "Content-Type": "application/json",
+    "Accept": "*/*",
+    "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Origin": "https://web.plaud.ai",
+    "Referer": "https://web.plaud.ai/",
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Safari/605.1.15"
+    ),
+    "Sec-Fetch-Site": "same-site",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Dest": "empty",
+    "app-platform": "web",
+    "edit-from": "web",
+    "Priority": "u=3, i",
+}
+
+
 class PlaudClient:
     """HTTP client for the Plaud.ai API."""
 
@@ -85,7 +105,10 @@ class PlaudClient:
         self._base = api_base.rstrip("/")
         self._http = httpx.Client(
             timeout=timeout,
-            headers={"Authorization": f"Bearer {self._token}"},
+            headers={
+                **_BROWSER_HEADERS,
+                "Authorization": f"Bearer {self._token}",
+            },
             follow_redirects=True,
         )
 
@@ -101,6 +124,16 @@ class PlaudClient:
     def _get(self, path: str) -> Any:
         try:
             resp = self._http.get(f"{self._base}{path}")
+        except httpx.RequestError as exc:
+            raise PlaudApiError("network", f"Network error: {exc}") from exc
+        if resp.status_code >= 400:
+            cat = _map_status_category(resp.status_code)
+            raise PlaudApiError(cat, f"HTTP {resp.status_code}", status=resp.status_code)
+        return resp.json()
+
+    def _post(self, path: str, json_body: Any = None) -> Any:
+        try:
+            resp = self._http.post(f"{self._base}{path}", json=json_body)
         except httpx.RequestError as exc:
             raise PlaudApiError("network", f"Network error: {exc}") from exc
         if resp.status_code >= 400:
@@ -137,8 +170,30 @@ class PlaudClient:
         data = self._get(f"/file/detail/{quote(file_id, safe='')}")
         return _extract_detail_payload(data)
 
+    def get_file_detail_full(self, file_id: str) -> dict[str, Any]:
+        """Return full detail via POST /file/list (includes trans_result inline)."""
+        data = self._post("/file/list", json_body=[file_id])
+        files = _extract_list_payload(data)
+        if not files:
+            raise PlaudApiError("not_found", f"Recording not found: {file_id}")
+        return files[0]
+
     def get_file_detail_hydrated(self, file_id: str) -> dict[str, Any]:
-        """Return full detail with transcript/summary fetched from signed URLs."""
+        """Return full detail with transcript/summary.
+
+        Uses POST /file/list as primary source (returns trans_result inline).
+        Falls back to GET /file/detail + signed-URL hydration if the POST
+        endpoint fails or returns incomplete data.
+        """
+        try:
+            detail = self.get_file_detail_full(file_id)
+            if _has_transcript(detail) and _has_summary(detail):
+                return detail
+            # Have inline data but missing some content – try hydration on top
+            return self._hydrate(detail)
+        except PlaudApiError:
+            pass
+        # Fallback: original GET + hydration path
         detail = self.get_file_detail(file_id)
         return self._hydrate(detail)
 
@@ -204,6 +259,8 @@ def _has_transcript(detail: dict[str, Any]) -> bool:
     if isinstance(detail.get("transcript"), list) and detail["transcript"]:
         return True
     trans = detail.get("trans_result")
+    if isinstance(trans, list) and trans:
+        return True
     if isinstance(trans, dict):
         if isinstance(trans.get("full_text"), str) and trans["full_text"].strip():
             return True

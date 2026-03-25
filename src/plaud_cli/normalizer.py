@@ -168,9 +168,19 @@ def _normalize_transcript_line(entry: Any) -> str:
 
 
 def _extract_transcript(detail: dict[str, Any]) -> str:
-    trans = detail.get("trans_result") if isinstance(detail.get("trans_result"), dict) else {}
+    raw_trans = detail.get("trans_result")
+
+    # trans_result may be a dict (from GET /file/detail hydration)
+    # or a list of segments (from POST /file/list).
+    trans_dict: dict[str, Any] = {}
+    trans_list: list[Any] | None = None
+    if isinstance(raw_trans, dict):
+        trans_dict = raw_trans
+    elif isinstance(raw_trans, list):
+        trans_list = raw_trans
+
     direct = _first_str([
-        trans.get("full_text") if trans else None,
+        trans_dict.get("full_text") if trans_dict else None,
         detail.get("full_text"),
         detail.get("transcript_text"),
     ])
@@ -178,8 +188,9 @@ def _extract_transcript(detail: dict[str, Any]) -> str:
         return direct
 
     arrays = [
-        trans.get("paragraphs") if trans else None,
-        trans.get("sentences") if trans else None,
+        trans_list,
+        trans_dict.get("paragraphs") if trans_dict else None,
+        trans_dict.get("sentences") if trans_dict else None,
         detail.get("transcript"),
         detail.get("paragraphs"),
     ]
