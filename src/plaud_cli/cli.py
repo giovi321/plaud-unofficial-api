@@ -556,8 +556,8 @@ def _render_content(norm: dict[str, Any], fmt: str, includes: set[str] | None = 
     "--only-ready",
     is_flag=True,
     default=False,
-    help="Skip recordings that have no AI-generated content yet "
-         "(no summary, highlights, or transcript).",
+    help="Skip recordings whose AI-generated content (summary or highlights) "
+         "is not ready yet. Useful to avoid downloading incomplete results.",
 )
 @click.option(
     "--include", "include_types", multiple=True,
@@ -715,8 +715,8 @@ def sync(
                 )
                 norm = normalizer.normalize(raw)
 
-                if only_ready and not (norm["summary"] or norm["highlights"] or norm["transcript"]):
-                    console.print(f"  [yellow]–[/yellow] {fid}: skipped (no generated content yet)")
+                if only_ready and not (norm["summary"] or norm["highlights"]):
+                    console.print(f"  [yellow]–[/yellow] {fid}: skipped (AI content not ready yet)")
                     skipped += 1
                     continue
 
@@ -762,7 +762,7 @@ def sync(
 
     summary_parts = [f"{ok} downloaded"]
     if skipped:
-        summary_parts.append(f"[yellow]{skipped} skipped (no generated content)[/yellow]")
+        summary_parts.append(f"[yellow]{skipped} skipped (AI content not ready)[/yellow]")
     if failed:
         summary_parts.append(f"[red]{failed} failed[/red]")
     if dry_run:
