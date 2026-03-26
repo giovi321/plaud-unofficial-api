@@ -69,7 +69,7 @@ def _fmt_ts(ms: int) -> str:
 # ---------------------------------------------------------------------------
 
 @click.group()
-@click.version_option("1.5.0", prog_name="plaud")
+@click.version_option("1.5.1", prog_name="plaud")
 @click.option(
     "--config", "config_path",
     type=click.Path(dir_okay=False),
