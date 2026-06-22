@@ -31,8 +31,9 @@ Unofficial command-line tool for [plaud.ai](https://web.plaud.ai/) — reverse-e
    - [config set-api](#plaud-config-set-api-url)
 8. [Project structure](#project-structure)
 9. [How the API works](#how-the-api-works)
-10. [Legal](#legal)
-11. [License](#license)
+10. [Troubleshooting](#troubleshooting)
+11. [Legal](#legal)
+12. [License](#license)
 
 ---
 
@@ -477,11 +478,20 @@ plaud config set-api <URL>
 ```
 
 Overrides the API base URL saved in `config.yaml`.
-Useful if Plaud changes their API domain or for local testing.
+Useful for pinning a specific regional host, local testing, or if Plaud
+changes their API domain.
 
 ```bash
+# Pin a specific regional host (skips the discovery round-trip)
+plaud config set-api https://api-euc1.plaud.ai
+
+# Reset to the discovery host to re-enable automatic region routing
 plaud config set-api https://api.plaud.ai
 ```
+
+By default (discovery host) the client auto-detects your account's region from
+the token and follows any redirect the API issues — see
+[Troubleshooting](#troubleshooting). An explicit override set here always wins.
 
 ## Project structure
 
@@ -517,9 +527,12 @@ The client handles this automatically:
 1. On startup it reads the `region` claim from your token (JWT) and routes to
    the matching regional host. An explicit `plaud config set-api` override
    always wins.
-2. If a request still hits a `-302`, it follows the `domain` the API returns
-   (or falls back to the token's region) and retries once. Only `*.plaud.ai`
-   hosts are accepted as redirect targets.
+2. If a request still hits a `-302`, it follows the host the API returns in
+   `data.domains.api` and retries once. The server's host is authoritative and
+   wins over the token's region claim, which can be **stale** after an account
+   migration (e.g. a token issued as `aws:us-west-2` whose data now lives in
+   `aws:eu-central-1`). Only `*.plaud.ai` hosts are accepted as redirect
+   targets; if the body omits a host it falls back to the token's region.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -541,6 +554,39 @@ The client first tries `POST /file/list` which returns transcript data
 endpoint fails or returns incomplete data, it falls back to
 `GET /file/detail/{id}` and fetches transcript/summary from signed URLs
 in the `content_list` array.
+
+## Troubleshooting
+
+### `invalid_response: user region mismatch`
+
+Plaud shards accounts across regional API hosts and migrates accounts between
+them (their "Service Region Adjustment"). When the host you contact doesn't
+hold your account's data, the API replies with `status: -302` /
+`msg: "user region mismatch"` and the correct host in `data.domains.api`.
+
+As of **v1.6.0** the client handles this automatically: it routes by the
+token's region claim on startup and follows the server's redirect (capped at
+one hop, `*.plaud.ai` only). If you still see this error:
+
+1. **Update to v1.6.0+** — earlier versions surface the raw error with no retry.
+2. **Find your real host** — the server tells you directly:
+
+   ```bash
+   TOKEN=$(grep -i '^token:' ~/.config/plaud-cli/config.yaml \
+     | sed -E 's/^token:[[:space:]]*(bearer[[:space:]]+)?//I' | tr -d '"')
+   curl -s https://api.plaud.ai/file/simple/web \
+     -H "Authorization: Bearer $TOKEN" | grep -o '"api":"[^"]*"'
+   # → "api":"https://api-euc1.plaud.ai"
+   ```
+
+3. **Pin it** (optional, skips the redirect hop):
+   `plaud config set-api https://api-euc1.plaud.ai`
+
+> **Note:** the `region` claim inside your token is the region it was *issued*
+> in and can be **stale** after a migration (e.g. an `aws:us-west-2` token whose
+> data now lives in `aws:eu-central-1`). The host in the `-302` response body is
+> authoritative — the client always prefers it over the token claim. Logging in
+> again at `web.plaud.ai` refreshes the claim to your current region.
 
 ## Legal
 

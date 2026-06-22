@@ -80,6 +80,32 @@ def _safe_plaud_host(host: str) -> str | None:
     return None
 
 
+def _extract_redirect_domain(data: dict[str, Any]) -> str | None:
+    """Pull the correct API host out of a -302 ``user region mismatch`` body.
+
+    Observed shape (live API):
+        {"status": -302, "data": {"domains": {"api": "https://api-euc1.plaud.ai"}}}
+    A few flatter variants are tolerated defensively.
+    """
+    inner = data.get("data")
+    if isinstance(inner, dict):
+        domains = inner.get("domains")
+        if isinstance(domains, dict):
+            for k in ("api", "host", "web"):
+                v = domains.get(k)
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+    for key in ("domain", "region_domain"):
+        v = data.get(key)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+        if isinstance(v, dict):
+            d = v.get("api") or v.get("domain") or v.get("host")
+            if isinstance(d, str) and d.strip():
+                return d.strip()
+    return None
+
+
 def _is_success_status(status: Any) -> bool:
     if isinstance(status, int):
         return status in (0, 200)
@@ -230,17 +256,9 @@ class PlaudClient:
         msg = str(data.get("msg", "")).strip().lower()
         if status != -302 and msg != "user region mismatch":
             return None
-        domain = ""
-        for key in ("domain", "region_domain"):
-            v = data.get(key)
-            if isinstance(v, str) and v.strip():
-                domain = v.strip()
-                break
-            if isinstance(v, dict):
-                d = v.get("domain") or v.get("host")
-                if isinstance(d, str) and d.strip():
-                    domain = d.strip()
-                    break
+        # The server is authoritative: prefer the host it returns over the
+        # token's region claim, which can be stale after an account migration.
+        domain = _extract_redirect_domain(data)
         host = _safe_plaud_host(domain) if domain else None
         if host:
             return f"https://{host}"
