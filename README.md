@@ -505,6 +505,22 @@ plaud-unofficial-api/
 Plaud exposes an undocumented REST API at `https://api.plaud.ai`. All requests
 are authenticated with a `Bearer` token in the `Authorization` header.
 
+**Regional routing:**
+
+Plaud shards accounts across dedicated regional API hosts (e.g.
+`api-usw2.plaud.ai` for `aws:us-west-2`, `api-euc1.plaud.ai` for
+`aws:eu-central-1`). `api.plaud.ai` is now a *discovery* host that rejects
+region-pinned tokens with `status: -302` / `msg: "user region mismatch"`.
+
+The client handles this automatically:
+
+1. On startup it reads the `region` claim from your token (JWT) and routes to
+   the matching regional host. An explicit `plaud config set-api` override
+   always wins.
+2. If a request still hits a `-302`, it follows the `domain` the API returns
+   (or falls back to the token's region) and retries once. Only `*.plaud.ai`
+   hosts are accepted as redirect targets.
+
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/file/simple/web` | `GET` | List all recordings (summary objects) |

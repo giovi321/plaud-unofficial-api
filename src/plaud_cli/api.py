@@ -25,6 +25,61 @@ def _normalize_token(token: str) -> str:
     return token
 
 
+# Plaud splits accounts across dedicated regional API hosts. The host is
+# derived from the AWS region claim embedded in the JWT; api.plaud.ai is the
+# discovery host that rejects region-pinned tokens with a -302 redirect.
+_REGION_HOSTS = {
+    "aws:eu-central-1": "api-euc1.plaud.ai",
+    "aws:eu-west-1": "api-euw1.plaud.ai",
+    "aws:us-east-1": "api-use1.plaud.ai",
+    "aws:us-east-2": "api-use2.plaud.ai",
+    "aws:us-west-1": "api-usw1.plaud.ai",
+    "aws:us-west-2": "api-usw2.plaud.ai",
+    "aws:ap-southeast-1": "api-apse1.plaud.ai",
+    "aws:ap-southeast-2": "api-apse2.plaud.ai",
+    "aws:ap-northeast-1": "api-apne1.plaud.ai",
+    "aws:ap-south-1": "api-aps1.plaud.ai",
+}
+
+
+def _decode_jwt_region(token: str) -> str | None:
+    """Return the AWS region claim embedded in a Plaud JWT, if present."""
+    import base64
+    import json
+
+    parts = token.split(".")
+    if len(parts) != 3:
+        return None
+    payload = parts[1] + "=" * (-len(parts[1]) % 4)
+    try:
+        claims = json.loads(base64.urlsafe_b64decode(payload))
+    except Exception:
+        return None
+    region = claims.get("region") if isinstance(claims, dict) else None
+    return region if isinstance(region, str) and region else None
+
+
+def _region_base_from_token(token: str) -> str | None:
+    """Map the token's region claim to its dedicated Plaud API base URL."""
+    region = _decode_jwt_region(token)
+    if not region:
+        return None
+    host = _REGION_HOSTS.get(region)
+    return f"https://{host}" if host else None
+
+
+def _safe_plaud_host(host: str) -> str | None:
+    """Accept only bare ``*.plaud.ai`` hosts as redirect targets."""
+    host = host.strip().lower()
+    for prefix in ("https://", "http://"):
+        if host.startswith(prefix):
+            host = host[len(prefix):]
+    host = host.split("/", 1)[0]
+    if host == "plaud.ai" or host.endswith(".plaud.ai"):
+        return host
+    return None
+
+
 def _is_success_status(status: Any) -> bool:
     if isinstance(status, int):
         return status in (0, 200)
@@ -102,7 +157,15 @@ class PlaudClient:
 
     def __init__(self, token: str, api_base: str = API_BASE, timeout: float = 30.0) -> None:
         self._token = _normalize_token(token)
-        self._base = api_base.rstrip("/")
+        base = api_base.rstrip("/")
+        # When left at the default discovery host, route to the account's
+        # regional host derived from the token. An explicit override (set via
+        # `plaud config set-api`) is always respected.
+        if base == API_BASE:
+            region_base = _region_base_from_token(self._token)
+            if region_base:
+                base = region_base
+        self._base = base
         self._http = httpx.Client(
             timeout=timeout,
             headers={
@@ -121,7 +184,7 @@ class PlaudClient:
     def __exit__(self, *_: Any) -> None:
         self.close()
 
-    def _get(self, path: str) -> Any:
+    def _get(self, path: str, *, _redirected: bool = False) -> Any:
         try:
             resp = self._http.get(f"{self._base}{path}")
         except httpx.RequestError as exc:
@@ -129,9 +192,15 @@ class PlaudClient:
         if resp.status_code >= 400:
             cat = _map_status_category(resp.status_code)
             raise PlaudApiError(cat, f"HTTP {resp.status_code}", status=resp.status_code)
-        return resp.json()
+        data = resp.json()
+        if not _redirected:
+            target = self._region_redirect_target(data)
+            if target:
+                self._base = target
+                return self._get(path, _redirected=True)
+        return data
 
-    def _post(self, path: str, json_body: Any = None) -> Any:
+    def _post(self, path: str, json_body: Any = None, *, _redirected: bool = False) -> Any:
         try:
             resp = self._http.post(f"{self._base}{path}", json=json_body)
         except httpx.RequestError as exc:
@@ -139,7 +208,43 @@ class PlaudClient:
         if resp.status_code >= 400:
             cat = _map_status_category(resp.status_code)
             raise PlaudApiError(cat, f"HTTP {resp.status_code}", status=resp.status_code)
-        return resp.json()
+        data = resp.json()
+        if not _redirected:
+            target = self._region_redirect_target(data)
+            if target:
+                self._base = target
+                return self._post(path, json_body, _redirected=True)
+        return data
+
+    def _region_redirect_target(self, data: Any) -> str | None:
+        """Return the host to retry on when the API signals a region mismatch.
+
+        The discovery host answers region-pinned tokens with ``status: -302`` /
+        ``msg: "user region mismatch"`` and usually the correct ``domain`` to
+        use. Fall back to the token's region claim when the body omits it.
+        Only ``*.plaud.ai`` hosts are honoured.
+        """
+        if not isinstance(data, dict):
+            return None
+        status = data.get("status")
+        msg = str(data.get("msg", "")).strip().lower()
+        if status != -302 and msg != "user region mismatch":
+            return None
+        domain = ""
+        for key in ("domain", "region_domain"):
+            v = data.get(key)
+            if isinstance(v, str) and v.strip():
+                domain = v.strip()
+                break
+            if isinstance(v, dict):
+                d = v.get("domain") or v.get("host")
+                if isinstance(d, str) and d.strip():
+                    domain = d.strip()
+                    break
+        host = _safe_plaud_host(domain) if domain else None
+        if host:
+            return f"https://{host}"
+        return _region_base_from_token(self._token)
 
     def _fetch_url(self, url: str) -> Any:
         """Fetch an arbitrary URL (used for signed content links)."""

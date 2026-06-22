@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "plaud-cli"
-version = "1.5.1"
+version = "1.6.0"
 description = "Unofficial command-line tool for the Plaud.ai API"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -20,8 +20,15 @@ dependencies = [
 [project.scripts]
 plaud = "plaud_cli.cli:main"
 
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
