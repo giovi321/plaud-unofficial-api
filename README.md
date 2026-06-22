@@ -125,7 +125,15 @@ All settings are stored in a single YAML file:
 ```yaml
 api_base: https://api.plaud.ai
 token: bearer eyJ...
+# Optional — only if you use credential login for automatic token refresh:
+email: you@example.com
+password: your-plaud-password
 ```
+
+> `email` / `password` are written by `plaud login --email …` (unless you pass
+> `--no-save-credentials`). They can also be supplied via the `PLAUD_EMAIL` /
+> `PLAUD_PASSWORD` environment variables, which **take priority** over the file.
+> See [Keeping an unattended sync alive](#keeping-an-unattended-sync-alive).
 
 ### Setting up the config file
 
@@ -202,15 +210,38 @@ plaud --config ./project.yaml sync ./notes/
 
 ```
 plaud login [--token TEXT]
+plaud login --email EMAIL [--password PW] [--no-save-credentials]
 ```
 
-Prompts for your Plaud token and saves it to `config.yaml`.
-Pass `--token` to provide it directly without the prompt.
+Two modes:
+
+- **Paste a token** (default) — prompts for the token from
+  [web.plaud.ai](#obtaining-your-token) and saves it.
+- **Credential login** (`--email`) — calls the Plaud web login
+  (`POST /auth/access-token`), mints a token, and (unless
+  `--no-save-credentials`) stores your email+password so the CLI can **re-mint
+  the short-lived token automatically** before each command. This is what keeps
+  an unattended `sync` alive — v2 tokens expire in ~24h. Credentials may also be
+  supplied via `PLAUD_EMAIL` / `PLAUD_PASSWORD` env vars (which take priority
+  over the config file).
 
 ```bash
+# paste-based
 plaud login
 # Plaud token: <paste here>
+
+# credential login (prompts for the password)
+plaud login --email you@example.com
+
+# env-var credentials — don't write the password to disk
+export PLAUD_EMAIL=you@example.com PLAUD_PASSWORD='…'
+plaud login --email "$PLAUD_EMAIL" --password "$PLAUD_PASSWORD" --no-save-credentials
 ```
+
+> Credential login currently supports **email + password** accounts (not SSO or
+> MFA). With `--save-credentials` (the default) your password is written in
+> plaintext to the gitignored `config.yaml`; use env vars +
+> `--no-save-credentials` to avoid that.
 
 ### `plaud logout`
 
@@ -588,8 +619,10 @@ Token lifetime lives in the JWT's `iat`/`exp` claims and recently **changed**:
 | Legacy | no `ver`, often `aws:us-west-2` | ~300 days |
 | v2 | `ver: 2` (e.g. `aws:eu-central-1`) | **~24 hours** |
 
-> `plaud login` stores a token you paste — it does not log in with credentials.
-> To see what you hold, decode your token's `exp` claim (snippet in
+> `plaud login --email …` logs in with credentials via `/auth/access-token` and
+> auto-refreshes the token; plain `plaud login` just stores a token you paste.
+> See [Keeping an unattended sync alive](#keeping-an-unattended-sync-alive). To
+> inspect what you hold, decode your token's `exp` claim (snippet in
 > [Troubleshooting](#auth-http-401--token-invalid-or-expired)).
 
 Plaud's **official, supported** API is different: an OAuth 2.0 client-credentials
@@ -650,16 +683,24 @@ Both are fixed the same way: capture a fresh token
 
 ### Keeping an unattended sync alive
 
-Because v2 tokens expire in ~24h with no refresh token, a cron'd `sync` needs a
-fresh token at least daily. Until the CLI grows a credential login, the options are:
+v2 tokens expire in ~24h with no refresh token, so a cron'd `sync` needs a fresh
+token regularly. The CLI handles this via **credential login**: once email+password
+are available — stored by `plaud login --email …`, or supplied via `PLAUD_EMAIL` /
+`PLAUD_PASSWORD` env vars — every command checks the token and **re-mints it
+automatically** (`POST /auth/access-token`) when it is missing or within ~5 minutes
+of expiry. A still-valid token is reused as-is (no extra request).
 
-- **Re-paste** a token from `web.plaud.ai` into the config before each run
-  (e.g. drive a logged-in headless browser to run the capture snippet).
-- **Re-mint via the web auth endpoint** the app itself uses — `POST
-  /auth/access-token` with form-encoded `username`+`password`
-  (see [How the API works](#how-the-api-works)) — and write the returned
-  `access_token` into `config.yaml`. Store the password with care (e.g. a
-  root-only file or a secrets manager).
+```bash
+# one-time setup — stores credentials for auto-refresh
+plaud login --email you@example.com
+
+# your existing cron keeps working; the token now self-renews
+plaud --config ~/.config/plaud-cli/config.yaml sync …
+```
+
+To keep the password off disk, export `PLAUD_EMAIL` / `PLAUD_PASSWORD` in the
+cron environment instead (auto-refresh reads them directly, no `config.yaml`
+entry needed).
 
 ## Legal
 

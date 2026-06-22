@@ -27,7 +27,24 @@ err_console = Console(stderr=True, style="red")
 # ---------------------------------------------------------------------------
 
 def _require_token(token_opt: str | None) -> str:
-    token = token_opt or cfg.get_token()
+    if token_opt:
+        return token_opt
+    token = cfg.get_token()
+    # Auto-refresh: v2 tokens expire in ~24h. If stored credentials are
+    # available (env vars or config.yaml) and the token is missing/stale,
+    # mint a fresh one transparently so unattended syncs keep working.
+    email, password = cfg.get_credentials()
+    if email and password and plaud_api.token_needs_refresh(token):
+        try:
+            token = plaud_api.authenticate(email, password, api_base=cfg.get_api_base())
+            cfg.save_token(token)
+        except plaud_api.PlaudApiError as exc:
+            if not token:
+                err_console.print(
+                    f"[bold red]Auto-login failed ({exc.category}):[/bold red] {exc}"
+                )
+                sys.exit(1)
+            # Otherwise fall through and try the existing (possibly stale) token.
     if not token:
         err_console.print(
             "[bold red]No token found.[/bold red] "
@@ -91,10 +108,54 @@ def main(ctx: click.Context, config_path: str | None) -> None:
 # ---------------------------------------------------------------------------
 
 @main.command()
-@click.option("--token", prompt="Plaud token (starts with 'bearer eyJ…' or just the JWT)",
-              hide_input=True, help="Long-lived bearer token from web.plaud.ai localStorage.")
-def login(token: str) -> None:
-    """Store your Plaud API token securely."""
+@click.option("--token", default=None,
+              help="Bearer token from web.plaud.ai (paste-based login).")
+@click.option("--email", default=None,
+              help="Account email — enables credential login that can auto-refresh.")
+@click.option("--password", default=None,
+              help="Account password (omit to be prompted securely).")
+@click.option("--save-credentials/--no-save-credentials", default=True,
+              help="Store email+password in config.yaml so the token auto-refreshes "
+                   "(default: yes). Use --no-save-credentials if you set "
+                   "PLAUD_EMAIL / PLAUD_PASSWORD env vars instead.")
+def login(token: str | None, email: str | None, password: str | None,
+          save_credentials: bool) -> None:
+    """Store a token, or log in with email+password to mint one that auto-refreshes.
+
+    With --email/--password the CLI calls the Plaud web login endpoint and (by
+    default) saves the credentials so it can re-mint the short-lived token
+    automatically before each command. Without them it stores a token you paste.
+    """
+    if email is not None or password is not None:
+        if not email:
+            email = click.prompt("Plaud email")
+        if not password:
+            password = click.prompt("Plaud password", hide_input=True)
+        try:
+            new_token = plaud_api.authenticate(email, password, api_base=cfg.get_api_base())
+        except plaud_api.PlaudApiError as exc:
+            err_console.print(f"[bold red]Login failed ({exc.category}):[/bold red] {exc}")
+            sys.exit(1)
+        location = cfg.save_token(new_token)
+        if save_credentials:
+            cfg.save_credentials(email, password)
+            console.print(
+                f"[green]Logged in[/green] and saved credentials for auto-refresh → "
+                f"[bold]{location}[/bold]"
+            )
+            console.print(
+                "[dim]Your password is stored in plaintext in that gitignored file. "
+                "To avoid that, set PLAUD_EMAIL / PLAUD_PASSWORD env vars and re-run "
+                "with --no-save-credentials.[/dim]"
+            )
+        else:
+            console.print(f"[green]Logged in.[/green] Token saved → [bold]{location}[/bold]")
+        return
+
+    if not token:
+        token = click.prompt(
+            "Plaud token (starts with 'bearer eyJ…' or just the JWT)", hide_input=True
+        )
     token = token.strip()
     if not token:
         err_console.print("Token cannot be empty.")

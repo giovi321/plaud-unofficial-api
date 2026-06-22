@@ -42,21 +42,43 @@ _REGION_HOSTS = {
 }
 
 
-def _decode_jwt_region(token: str) -> str | None:
-    """Return the AWS region claim embedded in a Plaud JWT, if present."""
+def _decode_jwt(token: str) -> dict[str, Any]:
+    """Decode a JWT payload into a claims dict (no signature verification)."""
     import base64
     import json
 
     parts = token.split(".")
     if len(parts) != 3:
-        return None
+        return {}
     payload = parts[1] + "=" * (-len(parts[1]) % 4)
     try:
         claims = json.loads(base64.urlsafe_b64decode(payload))
     except Exception:
-        return None
-    region = claims.get("region") if isinstance(claims, dict) else None
+        return {}
+    return claims if isinstance(claims, dict) else {}
+
+
+def _decode_jwt_region(token: str) -> str | None:
+    """Return the AWS region claim embedded in a Plaud JWT, if present."""
+    region = _decode_jwt(token).get("region")
     return region if isinstance(region, str) and region else None
+
+
+def token_needs_refresh(token: str | None, skew: int = 300) -> bool:
+    """True when there is no token, or its ``exp`` is within ``skew`` seconds.
+
+    A token with no ``exp`` claim is treated as long-lived (no refresh forced),
+    matching Plaud's legacy ~300-day tokens; the newer v2 tokens carry a short
+    ``exp`` (~24h) and so are refreshed proactively.
+    """
+    import time
+
+    if not token:
+        return True
+    exp = _decode_jwt(_normalize_token(token)).get("exp")
+    if not isinstance(exp, (int, float)):
+        return False
+    return exp - time.time() <= skew
 
 
 def _region_base_from_token(token: str) -> str | None:
@@ -104,6 +126,74 @@ def _extract_redirect_domain(data: dict[str, Any]) -> str | None:
             if isinstance(d, str) and d.strip():
                 return d.strip()
     return None
+
+
+def _is_region_mismatch(data: Any) -> bool:
+    if not isinstance(data, dict):
+        return False
+    return (
+        data.get("status") == -302
+        or str(data.get("msg", "")).strip().lower() == "user region mismatch"
+    )
+
+
+def _redirect_base_from_body(data: Any) -> str | None:
+    """Return the ``*.plaud.ai`` base URL a -302 body points to, if any."""
+    if not _is_region_mismatch(data):
+        return None
+    domain = _extract_redirect_domain(data)
+    host = _safe_plaud_host(domain) if domain else None
+    return f"https://{host}" if host else None
+
+
+def _extract_access_token(data: Any) -> str | None:
+    """Pull ``access_token`` out of a login response (top level or under data)."""
+    if not isinstance(data, dict):
+        return None
+    inner = data.get("data")
+    for container in (data, inner if isinstance(inner, dict) else None):
+        if isinstance(container, dict):
+            v = container.get("access_token")
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+    return None
+
+
+def authenticate(
+    email: str, password: str, api_base: str = API_BASE, timeout: float = 30.0
+) -> str:
+    """Log in with email + password and return a fresh access token.
+
+    Calls ``POST /auth/access-token`` (the web app's credential login, form
+    encoded) and follows the regional ``-302`` redirect once. Raises
+    ``PlaudApiError`` on failure.
+    """
+    headers = {**_BROWSER_HEADERS, "Content-Type": "application/x-www-form-urlencoded"}
+    with httpx.Client(timeout=timeout, headers=headers, follow_redirects=True) as http:
+        return _authenticate(http, email, password, api_base.rstrip("/"))
+
+
+def _authenticate(http: httpx.Client, email: str, password: str, base: str) -> str:
+    form = {"username": email, "password": password}
+    for attempt in range(2):
+        try:
+            resp = http.post(f"{base}/auth/access-token", data=form)
+        except httpx.RequestError as exc:
+            raise PlaudApiError("network", f"Network error: {exc}") from exc
+        if resp.status_code >= 400:
+            cat = _map_status_category(resp.status_code)
+            raise PlaudApiError(cat, f"HTTP {resp.status_code}", status=resp.status_code)
+        data = resp.json()
+        redirect = _redirect_base_from_body(data)
+        if redirect and attempt == 0:
+            base = redirect
+            continue
+        token = _extract_access_token(data)
+        if token:
+            return _normalize_token(token)
+        _assert_envelope_success(data)
+        raise PlaudApiError("auth", "Login succeeded but no access token was returned.")
+    raise PlaudApiError("auth", "Login failed after a region redirect.")
 
 
 def _is_success_status(status: Any) -> bool:
@@ -245,24 +335,13 @@ class PlaudClient:
     def _region_redirect_target(self, data: Any) -> str | None:
         """Return the host to retry on when the API signals a region mismatch.
 
-        The discovery host answers region-pinned tokens with ``status: -302`` /
-        ``msg: "user region mismatch"`` and usually the correct ``domain`` to
-        use. Fall back to the token's region claim when the body omits it.
-        Only ``*.plaud.ai`` hosts are honoured.
+        The server's host (from the -302 body) wins over the token's region
+        claim, which can be stale after an account migration. Only
+        ``*.plaud.ai`` hosts are honoured.
         """
-        if not isinstance(data, dict):
+        if not _is_region_mismatch(data):
             return None
-        status = data.get("status")
-        msg = str(data.get("msg", "")).strip().lower()
-        if status != -302 and msg != "user region mismatch":
-            return None
-        # The server is authoritative: prefer the host it returns over the
-        # token's region claim, which can be stale after an account migration.
-        domain = _extract_redirect_domain(data)
-        host = _safe_plaud_host(domain) if domain else None
-        if host:
-            return f"https://{host}"
-        return _region_base_from_token(self._token)
+        return _redirect_base_from_body(data) or _region_base_from_token(self._token)
 
     def _fetch_url(self, url: str) -> Any:
         """Fetch an arbitrary URL (used for signed content links)."""

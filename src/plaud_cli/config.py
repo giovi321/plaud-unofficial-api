@@ -68,6 +68,35 @@ def delete_token() -> None:
     _save_config(data)
 
 
+def get_credentials() -> tuple[str | None, str | None]:
+    """Return ``(email, password)`` for credential login / auto-refresh.
+
+    Environment variables ``PLAUD_EMAIL`` / ``PLAUD_PASSWORD`` take priority
+    over values stored in ``config.yaml``.
+    """
+    data = _load_config()
+    email = os.environ.get("PLAUD_EMAIL") or data.get("email")
+    password = os.environ.get("PLAUD_PASSWORD") or data.get("password")
+    return (email or None, password or None)
+
+
+def save_credentials(email: str, password: str) -> str:
+    """Persist login credentials to config.yaml. Returns the config file path."""
+    data = _load_config()
+    data["email"] = email
+    data["password"] = password
+    _save_config(data)
+    return str(_config_file())
+
+
+def delete_credentials() -> None:
+    """Remove stored login credentials from config.yaml."""
+    data = _load_config()
+    data.pop("email", None)
+    data.pop("password", None)
+    _save_config(data)
+
+
 def get_api_base() -> str:
     return _load_config().get("api_base", "https://api.plaud.ai")
 
