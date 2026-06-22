@@ -30,13 +30,16 @@ def _require_token(token_opt: str | None) -> str:
     if token_opt:
         return token_opt
     token = cfg.get_token()
-    # Auto-refresh: v2 tokens expire in ~24h. If stored credentials are
-    # available (env vars or config.yaml) and the token is missing/stale,
-    # mint a fresh one transparently so unattended syncs keep working.
+    # Auto-refresh: v2 tokens expire (browser-captured ~24h, credential-login
+    # ~30 days). If stored credentials are available (env vars or config.yaml)
+    # and the token is missing/stale, mint a fresh one transparently so
+    # unattended syncs keep working.
     email, password = cfg.get_credentials()
     if email and password and plaud_api.token_needs_refresh(token):
         try:
-            token = plaud_api.authenticate(email, password, api_base=cfg.get_api_base())
+            # Log in via the discovery host (it routes to the account's region);
+            # the data-plane api_base may be a stale regional override.
+            token = plaud_api.authenticate(email, password)
             cfg.save_token(token)
         except plaud_api.PlaudApiError as exc:
             if not token:
@@ -86,7 +89,7 @@ def _fmt_ts(ms: int) -> str:
 # ---------------------------------------------------------------------------
 
 @click.group()
-@click.version_option("1.6.1", prog_name="plaud")
+@click.version_option("2.0.0", prog_name="plaud")
 @click.option(
     "--config", "config_path",
     type=click.Path(dir_okay=False),
@@ -132,7 +135,8 @@ def login(token: str | None, email: str | None, password: str | None,
         if not password:
             password = click.prompt("Plaud password", hide_input=True)
         try:
-            new_token = plaud_api.authenticate(email, password, api_base=cfg.get_api_base())
+            # Discovery host routes the login to the account's home region.
+            new_token = plaud_api.authenticate(email, password)
         except plaud_api.PlaudApiError as exc:
             err_console.print(f"[bold red]Login failed ({exc.category}):[/bold red] {exc}")
             sys.exit(1)
@@ -243,9 +247,10 @@ def config_init(force: bool) -> None:
     )
     console.print(
         f"[green]Created[/green] {config_path}\n"
-        "Edit it and replace the [bold]token[/bold] value with your JWT from "
-        "[bold]web.plaud.ai[/bold] → DevTools → "
-        "[dim]localStorage.getItem(\"tokenstr\")[/dim]"
+        "Set your token with [bold]plaud login[/bold] (paste a token) or "
+        "[bold]plaud login --email you@example.com[/bold] (credential login). "
+        "See the README \"Obtaining your token\" section to capture one from "
+        "[bold]web.plaud.ai[/bold]."
     )
 
 
@@ -312,7 +317,8 @@ def list_files(token: str | None, as_json: bool, no_trash: bool, limit: int) -> 
 @click.option("--token", default=None, help="Override stored token.")
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
 @click.option("--hydrate/--no-hydrate", default=True, show_default=True,
-              help="Fetch transcript/summary from signed URLs.")
+              help="Fetch full transcript/summary "
+                   "(POST /file/list, falling back to signed URLs).")
 def detail(file_id: str, token: str | None, as_json: bool, hydrate: bool) -> None:
     """Show full detail for a single recording."""
     tok = _require_token(token)
@@ -369,11 +375,11 @@ FORMATTED_TYPES = {"summary", "highlights", "transcript"}
 @click.option("--token", default=None, help="Override stored token.")
 @click.option("--format", "fmt", type=click.Choice(EXPORT_FORMATS), default="markdown",
               show_default=True,
-              help="Output format for summary and highlights. "
-                   "Transcript is always saved as plain text.")
+              help="Output format for the included text content "
+                   "(summary, highlights, and transcript).")
 @click.option("--output", "-o", type=click.Path(), default=None,
-              help="Output file path (base name). "
-                   "Transcript is written to a separate .txt file with the same base name.")
+              help="Output file path (base name). All selected text content is "
+                   "written to this one file; an included recording is saved alongside.")
 @click.option("--hydrate/--no-hydrate", default=True, show_default=True)
 @click.option(
     "--include", "include_types", multiple=True,
@@ -387,11 +393,10 @@ def export(file_id: str, token: str | None, fmt: str, output: str | None,
     """Export a recording to Markdown, JSON, or plain text.
 
     \b
-    The --format option applies to summary and highlights only.
-    Transcript is always exported as plain text (.txt) because Plaud
-    does not provide formatted transcript content.
-    When multiple content types are requested, each type is written to
-    its own file using the same base name.
+    The --format option applies to all included text content (summary,
+    highlights, and transcript), which is rendered into a single file.
+    An included recording is downloaded as a separate audio file using
+    the same base name.
     """
     includes = set(include_types) if include_types else ALL_TEXT_TYPES
     tok = _require_token(token)
@@ -587,12 +592,13 @@ def _render_content(norm: dict[str, Any], fmt: str, includes: set[str] | None = 
 )
 @click.option("--format", "fmt", type=click.Choice(EXPORT_FORMATS), default="markdown",
               show_default=True,
-              help="Output format for summary and highlights. "
-                   "Transcript is always saved as plain text.")
+              help="Output format for the included text content "
+                   "(summary, highlights, and transcript).")
 @click.option("--no-trash", is_flag=True, default=True, show_default=True,
               help="Skip trashed recordings.")
 @click.option("--hydrate/--no-hydrate", default=True, show_default=True,
-              help="Fetch transcript/summary from signed URLs.")
+              help="Fetch full transcript/summary "
+                   "(POST /file/list, falling back to signed URLs).")
 @click.option(
     "--since", default=None, metavar="DATE",
     help="Only sync recordings newer than this ISO-8601 date (e.g. 2024-01-01).",

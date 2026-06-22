@@ -68,8 +68,9 @@ def token_needs_refresh(token: str | None, skew: int = 300) -> bool:
     """True when there is no token, or its ``exp`` is within ``skew`` seconds.
 
     A token with no ``exp`` claim is treated as long-lived (no refresh forced),
-    matching Plaud's legacy ~300-day tokens; the newer v2 tokens carry a short
-    ``exp`` (~24h) and so are refreshed proactively.
+    matching Plaud's legacy tokens; current v2 tokens carry a short ``exp``
+    (observed ~24h for browser-captured tokens, ~30 days for credential-login
+    tokens) and are refreshed proactively as they near expiry.
     """
     import time
 
@@ -167,8 +168,17 @@ def authenticate(
     Calls ``POST /auth/access-token`` (the web app's credential login, form
     encoded) and follows the regional ``-302`` redirect once. Raises
     ``PlaudApiError`` on failure.
+
+    Uses a deliberately minimal header set: the login endpoint returns a stub
+    with an empty token when sent the full browser-fingerprint headers that the
+    data endpoints expect.
     """
-    headers = {**_BROWSER_HEADERS, "Content-Type": "application/x-www-form-urlencoded"}
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json, text/plain, */*",
+        "Origin": "https://web.plaud.ai",
+        "Referer": "https://web.plaud.ai/",
+    }
     with httpx.Client(timeout=timeout, headers=headers, follow_redirects=True) as http:
         return _authenticate(http, email, password, api_base.rstrip("/"))
 
@@ -192,7 +202,10 @@ def _authenticate(http: httpx.Client, email: str, password: str, base: str) -> s
         if token:
             return _normalize_token(token)
         _assert_envelope_success(data)
-        raise PlaudApiError("auth", "Login succeeded but no access token was returned.")
+        keys = ", ".join(sorted(data)) if isinstance(data, dict) else type(data).__name__
+        raise PlaudApiError(
+            "auth", f"Login response had no access_token (response keys: {keys})."
+        )
     raise PlaudApiError("auth", "Login failed after a region redirect.")
 
 

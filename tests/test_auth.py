@@ -116,6 +116,31 @@ def test_authenticate_follows_region_redirect():
     assert hosts == ["api.plaud.ai", "api-euc1.plaud.ai"]
 
 
+def test_authenticate_extracts_token_from_real_success_envelope():
+    # Exact shape captured from the live euc1 /auth/access-token endpoint.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "status": 0, "msg": "success", "request_id": "", "uid": "eaa30b07",
+            "access_token": "eyJ.access.tok",
+            "refresh_token": "eyJ.refresh.tok",
+            "token_type": "bearer", "ut_expires_in": 2592000,
+        })
+
+    tok = plaud_api._authenticate(_auth_client(handler), "me@example.com", "pw", "https://api-euc1.plaud.ai")
+    assert tok == "eyJ.access.tok"
+
+
+def test_authenticate_raises_clear_error_when_success_but_no_token():
+    # The failure mode that bit a stale-host login: status 0, no access_token.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"status": 0, "msg": "success"})
+
+    with pytest.raises(plaud_api.PlaudApiError) as ei:
+        plaud_api._authenticate(_auth_client(handler), "me@example.com", "pw", "https://api-usw2.plaud.ai")
+    assert ei.value.category == "auth"
+    assert "access_token" in str(ei.value)
+
+
 def test_authenticate_raises_auth_on_http_401():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(401, json={"detail": "invalid credentials"})
