@@ -78,21 +78,34 @@ After installation the `plaud` command is available in your shell.
 
 ## Obtaining your token
 
-Plaud has no official API or developer portal. Authentication relies on the
-long-lived JWT that the Plaud web app stores in `localStorage`.
+Plaud has no official consumer API. Authentication uses the **region-scoped JWT**
+the Plaud web app holds after you log in. Each token carries a `region:
+aws:<region>` claim, and the CLI routes to the matching host automatically — see
+[How the API works](#how-the-api-works).
 
 **Steps:**
 
-1. Open [web.plaud.ai](https://web.plaud.ai/) and log in with your account.
-2. Open the browser **Developer Tools** (`F12` on Windows/Linux, `Cmd+Opt+I` on macOS).
-3. Go to the **Console** tab and run:
+1. Open [web.plaud.ai](https://web.plaud.ai/) and log in. Confirm your recordings load.
+2. Open **Developer Tools** (`F12` on Windows/Linux, `Cmd+Opt+I` on macOS) → **Console**.
+3. Paste this. It scans the app's stored values, picks the **freshest non-expired**
+   access token (skips profile blobs and stale tokens), and copies it to your clipboard:
    ```js
-   localStorage.getItem("tokenstr")
+   copy(Object.values(localStorage)
+     .flatMap(v => (v && v.match(/eyJ[\w-]+\.[\w-]+\.[\w-]+/g)) || [])
+     .map(t => { try { const p = JSON.parse(atob(t.split('.')[1].replace(/-/g,'+').replace(/_/g,'/'))); return p.exp*1000 > Date.now() ? { t, iat: p.iat || 0 } : null; } catch (e) { return null; } })
+     .filter(Boolean).sort((a, b) => b.iat - a.iat)[0]?.t);
    ```
-4. Copy the full string returned. It starts with `bearer eyJ…`.
+   Your clipboard now holds a `eyJ…` JWT. *(Older app builds also expose it as
+   `localStorage.getItem("tokenstr")`. If the one-liner returns nothing, use the
+   **Network** tab → any `api-*.plaud.ai` request → `authorization: Bearer …`.)*
+4. Load it: `plaud login` and paste at the prompt (or put it in `config.yaml`).
 
-> The token is long-lived (approximately 10 months) but will eventually expire.
-> When it does, repeat these steps and update your `config.yaml` or run `plaud login` again.
+> **⚠️ Token lifetime changed — read this if you run unattended syncs.** Legacy
+> tokens were long-lived (~300 days). Plaud's newer **v2** tokens (rolled out with
+> the regional migration — e.g. EU `aws:eu-central-1`) expire in about **24 hours**,
+> and there is **no refresh token**. When a token expires you re-capture it as
+> above. For cron/automation, see
+> [Troubleshooting → keeping an unattended sync alive](#keeping-an-unattended-sync-alive).
 
 ## Configuration
 
@@ -555,6 +568,36 @@ endpoint fails or returns incomplete data, it falls back to
 `GET /file/detail/{id}` and fetches transcript/summary from signed URLs
 in the `content_list` array.
 
+**Authentication & token lifetime:**
+
+The bearer token is a region-scoped JWT minted by the web app's own
+(undocumented) auth endpoints. Community clients have observed these on the
+**regional** host (they follow the same `-302` redirect as the data endpoints):
+
+| Endpoint | Method | Body | Returns |
+|----------|--------|------|---------|
+| `/auth/access-token` | `POST` | form-encoded `username` (email) + `password` | `{access_token, token_type}` |
+| `/auth/otp-send-code` | `POST` | JSON `{username, user_area}` | `{token}` |
+| `/auth/otp-login` | `POST` | JSON `{code, token, user_area}` | `{access_token, token_type}` |
+
+There is **no refresh token** — when the access token expires you re-authenticate.
+Token lifetime lives in the JWT's `iat`/`exp` claims and recently **changed**:
+
+| Token generation | Identifying claim | Typical lifetime |
+|------------------|-------------------|------------------|
+| Legacy | no `ver`, often `aws:us-west-2` | ~300 days |
+| v2 | `ver: 2` (e.g. `aws:eu-central-1`) | **~24 hours** |
+
+> `plaud login` stores a token you paste — it does not log in with credentials.
+> To see what you hold, decode your token's `exp` claim (snippet in
+> [Troubleshooting](#auth-http-401--token-invalid-or-expired)).
+
+Plaud's **official, supported** API is different: an OAuth 2.0 client-credentials
+surface at `platform-<region>.plaud.ai/developer/api` (with real refresh tokens),
+currently in private beta — see the
+[developer platform](https://www.plaud.ai/pages/developer-platform). It is
+unrelated to the web token this CLI uses.
+
 ## Troubleshooting
 
 ### `invalid_response: user region mismatch`
@@ -587,6 +630,36 @@ one hop, `*.plaud.ai` only). If you still see this error:
 > data now lives in `aws:eu-central-1`). The host in the `-302` response body is
 > authoritative — the client always prefers it over the token claim. Logging in
 > again at `web.plaud.ai` refreshes the claim to your current region.
+
+### `auth: HTTP 401` / `token invalid or expired`
+
+The (correct) regional host is rejecting your token. Two causes:
+
+- **Expired token** — v2 tokens last only ~24h. Decode the `exp` claim to check:
+  ```bash
+  T=$(grep -i '^token:' ~/.config/plaud-cli/config.yaml | sed -E 's/^token:[[:space:]]*(bearer[[:space:]]+)?//I' | tr -d '"')
+  python3 -c "import sys,base64,json,time;p=sys.argv[1].split('.')[1];p+='='*(-len(p)%4);d=json.loads(base64.urlsafe_b64decode(p));print('region',d.get('region'),'| exp',time.strftime('%F %T',time.localtime(d['exp'])),'->','EXPIRED' if d['exp']<time.time() else 'valid')" "$T"
+  ```
+- **Cross-region token** — a still-valid token whose `region` no longer matches
+  where your data lives (e.g. an old `us-west-2` token after your account moved to
+  `eu-central-1`). The discovery host issues a `-302` (followed automatically), but
+  the destination host then refuses the foreign token with `401`.
+
+Both are fixed the same way: capture a fresh token
+([Obtaining your token](#obtaining-your-token)) and `plaud login`.
+
+### Keeping an unattended sync alive
+
+Because v2 tokens expire in ~24h with no refresh token, a cron'd `sync` needs a
+fresh token at least daily. Until the CLI grows a credential login, the options are:
+
+- **Re-paste** a token from `web.plaud.ai` into the config before each run
+  (e.g. drive a logged-in headless browser to run the capture snippet).
+- **Re-mint via the web auth endpoint** the app itself uses — `POST
+  /auth/access-token` with form-encoded `username`+`password`
+  (see [How the API works](#how-the-api-works)) — and write the returned
+  `access_token` into `config.yaml`. Store the password with care (e.g. a
+  root-only file or a secrets manager).
 
 ## Legal
 
