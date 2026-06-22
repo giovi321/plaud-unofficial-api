@@ -236,3 +236,38 @@ def test_require_token_explicit_token_is_not_refreshed(tmp_cfg, monkeypatch):
 
     assert cli._require_token("explicit.tok") == "explicit.tok"
     assert calls["n"] == 0
+
+
+def test_list_trash_filtering(tmp_cfg, monkeypatch):
+    import json as _json
+
+    files = [
+        {"id": "keep", "is_trash": 0, "file_name": "Keep"},
+        {"id": "trashed", "is_trash": 1, "file_name": "Trashed"},
+    ]
+
+    class FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def list_files(self):
+            return list(files)
+
+    monkeypatch.setattr(plaud_api, "PlaudClient", FakeClient)
+    cfg.save_token(_jwt({"exp": int(time.time()) + 10000}))
+
+    # default: trashed recordings hidden
+    r = CliRunner().invoke(cli.main, ["--config", str(tmp_cfg), "list", "--json"])
+    assert r.exit_code == 0, r.output
+    assert [f["id"] for f in _json.loads(r.output)] == ["keep"]
+
+    # --trash: trashed recordings included
+    r2 = CliRunner().invoke(cli.main, ["--config", str(tmp_cfg), "list", "--json", "--trash"])
+    assert r2.exit_code == 0, r2.output
+    assert {f["id"] for f in _json.loads(r2.output)} == {"keep", "trashed"}

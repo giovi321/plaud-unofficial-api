@@ -420,7 +420,7 @@ Lists all recordings in a rich table showing ID, date, duration and title.
 |--------|---------|-------------|
 | `--token TEXT` | config | Override stored token (skips auto-refresh). |
 | `--json` | off | Print raw JSON array instead of a table. |
-| `--no-trash` | — | Trashed recordings are always hidden; there is currently no option to include them. |
+| `--no-trash / --trash` | hide | Trashed recordings are hidden by default; pass `--trash` to include them. |
 | `--limit N` | 0 (all) | Cap the number of results returned. |
 
 **Example output:**
@@ -532,7 +532,7 @@ separate file named `YYYY-MM-DD_<title>.<ext>`.
 | `--token TEXT` | config | Override stored token. |
 | `--mode` | `one-way` | Sync mode — see below. |
 | `--format` | `markdown` | Output format for the included text content: `markdown`, `json`, or `txt`. |
-| `--no-trash` | — | Trashed recordings are always skipped; there is currently no option to include them. |
+| `--no-trash / --trash` | hide | Trashed recordings are skipped by default; pass `--trash` to include them. |
 | `--hydrate / --no-hydrate` | hydrate | Fetch full transcript/summary (POST /file/list → signed URLs). |
 | `--since DATE` | (all) | Only sync recordings newer than this ISO-8601 date. |
 | `--registry / --no-registry` | off | Enable the download registry (see below). |

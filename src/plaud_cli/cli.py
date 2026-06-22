@@ -261,8 +261,8 @@ def config_init(force: bool) -> None:
 @main.command("list")
 @click.option("--token", default=None, help="Override stored token.")
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON.")
-@click.option("--no-trash", is_flag=True, default=True, show_default=True,
-              help="Hide trashed recordings.")
+@click.option("--no-trash/--trash", "no_trash", default=True, show_default=True,
+              help="Hide trashed recordings (default). Use --trash to include them.")
 @click.option("--limit", default=0, help="Limit number of results (0 = all).")
 def list_files(token: str | None, as_json: bool, no_trash: bool, limit: int) -> None:
     """List all recordings in your Plaud account."""
@@ -422,7 +422,6 @@ def export(file_id: str, token: str | None, fmt: str, output: str | None,
     base_dir = pathlib.Path(output).parent if output else pathlib.Path(".")
 
     formatted_includes = includes & FORMATTED_TYPES
-    want_transcript = "transcript" in includes
 
     if formatted_includes:
         ext_map = {"markdown": "md", "json": "json", "txt": "txt"}
@@ -440,17 +439,6 @@ def export(file_id: str, token: str | None, fmt: str, output: str | None,
             console.print(f"[green]Exported to[/green] {out_path}")
         else:
             click.echo(rendered)
-
-    if want_transcript and "transcript" not in formatted_includes and norm["transcript"]:
-        transcript_text = norm["transcript"]
-        if output:
-            transcript_path = base_dir / f"{base}_transcript.txt"
-            transcript_path.write_text(transcript_text, encoding="utf-8")
-            console.print(f"[green]Transcript saved to[/green] {transcript_path}")
-        else:
-            if formatted_includes:
-                click.echo("\n--- TRANSCRIPT ---\n")
-            click.echo(transcript_text)
 
     if audio_bytes is not None:
         audio_out = base_dir / f"{base}.{audio_ext}"
@@ -594,8 +582,8 @@ def _render_content(norm: dict[str, Any], fmt: str, includes: set[str] | None = 
               show_default=True,
               help="Output format for the included text content "
                    "(summary, highlights, and transcript).")
-@click.option("--no-trash", is_flag=True, default=True, show_default=True,
-              help="Skip trashed recordings.")
+@click.option("--no-trash/--trash", "no_trash", default=True, show_default=True,
+              help="Skip trashed recordings (default). Use --trash to include them.")
 @click.option("--hydrate/--no-hydrate", default=True, show_default=True,
               help="Fetch full transcript/summary "
                    "(POST /file/list, falling back to signed URLs).")
@@ -669,7 +657,6 @@ def sync(
     """
     includes = set(include_types) if include_types else ALL_TEXT_TYPES
     formatted_includes = includes & FORMATTED_TYPES
-    want_transcript = "transcript" in includes
     want_recording = "recording" in includes
     tok = _require_token(token)
     dest = pathlib.Path(output_dir)
@@ -799,12 +786,6 @@ def sync(
                     out_path = dest / filename
                     out_path.write_text(content, encoding="utf-8")
                     console.print(f"  [green]✓[/green] {filename}")
-
-                if want_transcript and "transcript" not in formatted_includes and norm["transcript"]:
-                    transcript_filename = _make_filename(norm, "txt") if not formatted_includes else _make_filename(norm, "transcript.txt")
-                    transcript_path = dest / transcript_filename
-                    transcript_path.write_text(norm["transcript"], encoding="utf-8")
-                    console.print(f"  [green]✓[/green] {transcript_filename} [dim](transcript)[/dim]")
 
                 if want_recording:
                     try:

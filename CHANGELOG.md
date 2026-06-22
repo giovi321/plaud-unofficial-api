@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- `--trash` on `list` and `sync` to include trashed recordings (the default still
+  hides them).
+
+### Removed
+- A dead code path that would have written transcripts to a separate `.txt` file.
+  Transcript already renders inline (`## Transcript`) in the formatted export when
+  included — behaviour is unchanged.
+
 ## [2.0.0] - 2026-06-22
 
 Plaud's regional sharding and short-lived v2 tokens are now first-class.
