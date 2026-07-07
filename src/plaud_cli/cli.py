@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import re
 import sys
@@ -524,29 +525,60 @@ REGISTRY_FILENAME = ".plaud_registry.json"
 
 
 def _load_registry(dest: pathlib.Path) -> dict[str, Any]:
-    """Load the download registry from dest/.plaud_registry.json."""
+    """Load the download registry from dest/.plaud_registry.json.
+
+    A corrupt registry is NOT silently reset: that would re-download every
+    recording and, for any recording whose title changed since first download,
+    write it under a new filename — duplicating it downstream. Instead the
+    corrupt file is preserved and the run aborts loudly.
+    """
     path = dest / REGISTRY_FILENAME
     if path.exists():
         try:
             return json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
+        except Exception as exc:
+            # Do NOT move the corrupt file out of the way: that would let the
+            # next unattended run start from an empty registry and silently
+            # re-download everything (duplicating any re-titled recording). Keep
+            # it in place so every run fails loudly until a human intervenes,
+            # and drop a copy for inspection.
+            stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            backup = path.with_name(path.name + f".corrupt-{stamp}")
+            try:
+                backup.write_bytes(path.read_bytes())
+            except OSError:
+                backup = path
+            raise click.ClickException(
+                f"registry {path} is corrupt ({exc}); copy saved as {backup}. "
+                "Fix or restore it before syncing. To force a full re-download, "
+                "delete it deliberately (WARNING: re-titled recordings will "
+                "re-download under new names and may duplicate downstream)."
+            )
     return {}
 
 
 def _save_registry(dest: pathlib.Path, registry: dict[str, Any]) -> None:
-    """Persist the download registry."""
+    """Persist the download registry atomically (temp file + rename)."""
     path = dest / REGISTRY_FILENAME
-    path.write_text(json.dumps(registry, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(registry, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def _make_filename(norm: dict[str, Any], ext: str) -> str:
     title = norm["title"] or norm["file_id"]
-    safe_title = re.sub(r'[\\/:*?"<>|]', "_", title)[:80]
+    # Replace filesystem-illegal chars AND control chars (tab/newline/CR would
+    # corrupt downstream TSV state and are legal-but-hostile in filenames).
+    # Truncation can leave a trailing space/dot, which Windows rejects — strip
+    # after cutting.
+    safe_title = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", title)[:80].strip().rstrip(" .")
+    if not safe_title:
+        safe_title = norm["file_id"]
     date_str = ""
     if norm["start_time_ms"]:
         try:
-            dt = datetime.fromtimestamp(norm["start_time_ms"] / 1000, tz=timezone.utc)
+            # Local date, not UTC: a 00:30 CEST recording belongs to that day.
+            dt = datetime.fromtimestamp(norm["start_time_ms"] / 1000, tz=timezone.utc).astimezone()
             date_str = dt.strftime("%Y-%m-%d_")
         except Exception:
             pass
@@ -611,8 +643,16 @@ def _render_content(norm: dict[str, Any], fmt: str, includes: set[str] | None = 
     "--only-ready",
     is_flag=True,
     default=False,
-    help="Skip recordings whose AI-generated content (summary or highlights) "
-         "is not ready yet. Useful to avoid downloading incomplete results.",
+    help="Skip recordings until every requested --include text type is ready "
+         "(e.g. both summary and transcript). Useful to avoid downloading "
+         "incomplete results.",
+)
+@click.option(
+    "--ready-timeout-days", type=int, default=0, show_default=True,
+    help="With --only-ready: once a recording is older than N days, sync it "
+         "anyway with whatever content is available (0 = wait forever). "
+         "Prevents recordings whose AI summary never materialises from being "
+         "withheld indefinitely.",
 )
 @click.option(
     "--include", "include_types", multiple=True,
@@ -632,6 +672,7 @@ def sync(
     registry: bool,
     dry_run: bool,
     only_ready: bool,
+    ready_timeout_days: int,
     include_types: tuple[str, ...],
 ) -> None:
     """Synchronise a local folder with your Plaud recordings.
@@ -723,7 +764,13 @@ def sync(
             if not fid:
                 continue
             if registry and fid in reg:
-                continue  # already downloaded (regardless of current filename)
+                entry = reg[fid]
+                # Entries recorded as incomplete (a requested section was not
+                # ready at download time) are retried so the file heals once
+                # the missing content becomes available. Legacy entries
+                # (no 'complete' key) are treated as complete.
+                if not isinstance(entry, dict) or entry.get("complete", True):
+                    continue  # already downloaded (regardless of current filename)
             # Fall back to name-based check when registry is disabled
             # We need the normalised name, so do a quick name estimation
             # from the list record (no detail fetch needed for the check).
@@ -759,6 +806,14 @@ def sync(
         skipped = 0
         failed = 0
         now_iso = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now_ms = datetime.now(tz=timezone.utc).timestamp() * 1000
+
+        # filename -> fid map to detect same-name collisions (same day + same
+        # or truncation-equal title) that would silently overwrite each other.
+        taken: dict[str, str] = {}
+        for f_, e_ in reg.items():
+            if isinstance(e_, dict) and e_.get("filename"):
+                taken[e_["filename"]] = f_
 
         for rec in to_download:
             fid = rec.get("file_id") or rec.get("id")
@@ -769,12 +824,41 @@ def sync(
                 )
                 norm = normalizer.normalize(raw)
 
-                if only_ready and not (norm["summary"] or norm["highlights"]):
-                    console.print(f"  [yellow]–[/yellow] {fid}: skipped (AI content not ready yet)")
-                    skipped += 1
-                    continue
+                requested = formatted_includes or FORMATTED_TYPES
+                present = {t for t in requested if norm.get(t)}
+                if only_ready and present < requested:
+                    aged_out = False
+                    if ready_timeout_days and norm["start_time_ms"]:
+                        age_days = (now_ms - norm["start_time_ms"]) / 86_400_000
+                        aged_out = age_days >= ready_timeout_days
+                    if not (aged_out and present):
+                        missing = ", ".join(sorted(requested - present))
+                        console.print(
+                            f"  [yellow]–[/yellow] {fid}: skipped (not ready: {missing} missing)"
+                        )
+                        skipped += 1
+                        continue
+                    console.print(
+                        f"  [yellow]![/yellow] {fid}: older than {ready_timeout_days}d — "
+                        f"syncing without: {', '.join(sorted(requested - present))}"
+                    )
 
-                filename = _make_filename(norm, ext)
+                # Keep the filename stable across re-downloads of the same
+                # recording (title may have changed on the Plaud side; a new
+                # name would duplicate the note downstream).
+                prior = reg.get(fid) if registry else None
+                if isinstance(prior, dict) and prior.get("filename"):
+                    filename = prior["filename"]
+                else:
+                    filename = _make_filename(norm, ext)
+                    if registry and taken.get(filename, fid) != fid:
+                        stem, dot, fext = filename.rpartition(".")
+                        suffix = f" [{fid[:8]}]"
+                        filename = f"{stem}{suffix}.{fext}" if dot else f"{filename}{suffix}"
+                        console.print(
+                            f"  [yellow]![/yellow] {fid}: filename collision — using {filename}"
+                        )
+                taken[filename] = fid
 
                 if dry_run:
                     console.print(f"  [dim]→[/dim] {filename}")
@@ -798,7 +882,16 @@ def sync(
                         console.print(f"  [yellow]⚠[/yellow] {fid}: recording download failed: {exc}")
 
                 if registry:
-                    reg[fid] = {"filename": filename, "downloaded_at": now_iso}
+                    reg[fid] = {
+                        "filename": filename,
+                        "downloaded_at": now_iso,
+                        "sections": sorted(present),
+                        "complete": present >= requested,
+                    }
+                    # Save after every file: a crash mid-run must not forget
+                    # what was already written to disk (a forgotten entry
+                    # re-downloads later — under a new name if re-titled).
+                    _save_registry(dest, reg)
 
                 ok += 1
             except plaud_api.PlaudApiError as exc:
@@ -816,3 +909,8 @@ def sync(
     if dry_run:
         summary_parts.append("[yellow]dry-run – nothing written[/yellow]")
     console.print(f"\n[bold]Done.[/bold] {', '.join(summary_parts)}")
+
+    if failed and not dry_run:
+        # Distinguish partial failure (exit 2) from hard failure (exit 1) so
+        # wrappers can alert without aborting their upload phase.
+        sys.exit(2)

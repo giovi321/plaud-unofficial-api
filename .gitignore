@@ -40,3 +40,7 @@ Thumbs.db
 
 # Registry files created by plaud sync
 .plaud_registry.json
+.plaud_registry.json.tmp
+.plaud_registry.json.corrupt-*
+# Legacy uploader state (should live outside the repo, but ignore it if present)
+.plaud-synced.log

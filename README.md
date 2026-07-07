@@ -537,12 +537,22 @@ separate file named `YYYY-MM-DD_<title>.<ext>`.
 | `--since DATE` | (all) | Only sync recordings newer than this ISO-8601 date. |
 | `--registry / --no-registry` | off | Enable the download registry (see below). |
 | `--dry-run` | off | Print what would be downloaded without writing anything. |
-| `--only-ready` | off | Skip recordings whose AI content is not ready (no summary **or** highlights). |
+| `--only-ready` | off | Skip a recording until **every requested `--include` text type** is present (e.g. both summary and transcript). Prevents summary-less or empty notes. |
+| `--ready-timeout-days N` | `0` | With `--only-ready`: once a recording is older than `N` days, sync it anyway with whatever content is available (and record it as incomplete so it heals later). `0` = wait forever. |
 | `--include TYPE` | text types | Content to include. Repeatable. Choices: `transcript`, `summary`, `highlights`, `recording`. Defaults to `transcript`, `summary`, `highlights`. |
 
 When `recording` is included, the audio file for each recording is downloaded into the
 same output directory (failures are non-fatal). Per-recording errors are counted and
-reported, never fatal; the run ends with a `Done. N downloaded, …` summary line.
+reported; the run then **exits `2`** (partial failure) so schedulers notice, while
+still writing every recording that did succeed. The run ends with a
+`Done. N downloaded, …` summary line.
+
+> **Readiness and healing.** With `--only-ready`, a recording is written only once
+> all requested sections exist. If it is forced through by `--ready-timeout-days`
+> (or a section disappears server-side), the registry marks it `complete: false`
+> and later runs re-fetch and rewrite it until it is whole. Re-fetches keep the
+> original filename even if the recording was re-titled on Plaud, so downstream
+> mirrors never get a duplicate.
 
 #### Sync modes
 
@@ -568,13 +578,20 @@ file written:
 {
   "abc123def456": {
     "filename": "2024-11-03_Team standup.md",
-    "downloaded_at": "2024-11-04T08:00:00Z"
+    "downloaded_at": "2024-11-04T08:00:00Z",
+    "sections": ["summary", "transcript"],
+    "complete": true
   }
 }
 ```
 
 Because the lookup is by `file_id`, files can be freely **renamed or moved** inside the
-output directory without triggering a re-download.
+output directory without triggering a re-download. `sections` lists the content types
+present at download time and `complete` is `false` while any requested section is still
+missing — those entries are re-fetched on later runs until they are whole (see
+*Readiness and healing* above). The file is written atomically and, if it is ever found
+corrupt, preserved as `.plaud_registry.json.corrupt-<timestamp>` rather than silently
+discarded.
 
 **Examples:**
 

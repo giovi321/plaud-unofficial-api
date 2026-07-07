@@ -28,6 +28,50 @@ def _as_nonneg_int(value: Any) -> int:
 
 _SUMMARY_KEYS = ("summary", "abstract", "content", "text", "ai_content", "note", "body")
 
+# STRONG diarized-transcript signals only: explicit "Speaker 1:" /
+# "Unknown Speaker 2:" labels, or "00:01:23" timestamp prefixes. Deliberately
+# NOT a generic "Label: value" pattern — real meeting summaries are label-heavy
+# ("Date:", "Action items:", "Attendees:"), and matching those silently drops
+# genuine summaries (the transcript-overlap guard below catches bare-name
+# diarization like "Andi:" instead).
+_TRANSCRIPT_LINE = re.compile(
+    r"^\s*(?:>?\s*(?:unknown\s+)?speaker\s*\d*\s*:|>?\s*\d{1,2}:\d{2}(?::\d{2})?\b)",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_transcript(text: str) -> bool:
+    """True when a candidate 'summary' is diarized transcript by its shape.
+
+    Fires only on unambiguous "Speaker N:" / timestamp-dominated text so a
+    label-heavy but genuine summary is never misclassified.
+    """
+    lines = [l for l in text.splitlines() if l.strip()]
+    if len(lines) < 4:
+        return False
+    hits = sum(1 for l in lines if _TRANSCRIPT_LINE.match(l))
+    return hits / len(lines) >= 0.6
+
+
+def _overlaps_transcript(summary: str, transcript: str) -> bool:
+    """True when the candidate summary is (mostly) verbatim transcript content.
+
+    Catches transcript text mis-nested under a summary key regardless of its
+    speaker-label format, without false-positiving on a genuine summary (which
+    paraphrases and so shares little verbatim line content with the transcript).
+    """
+    if not summary or not transcript:
+        return False
+    s = summary.strip()
+    if s in transcript:
+        return True
+    # Compare substantial lines (ignore short labels/headers) verbatim.
+    s_lines = [l.strip() for l in s.splitlines() if len(l.strip()) >= 20]
+    if len(s_lines) < 3:
+        return False
+    hits = sum(1 for l in s_lines if l in transcript)
+    return hits / len(s_lines) >= 0.7
+
 
 def _unwrap_summary_text(value: Any, _depth: int = 0) -> str:
     """Recursively unwrap a possibly JSON-encoded summary into plain text."""
@@ -66,7 +110,7 @@ def _extract_summary(detail: dict[str, Any]) -> str:
         if not candidate:
             continue
         result = _unwrap_summary_text(candidate)
-        if result:
+        if result and not _looks_like_transcript(result):
             return result
 
     for item in (detail.get("pre_download_content_list") or []):
@@ -77,14 +121,14 @@ def _extract_summary(detail: dict[str, Any]) -> str:
             content = _first_str([item.get("content"), item.get("value"), item.get("text")])
             if content:
                 result = _unwrap_summary_text(content)
-                if result:
+                if result and not _looks_like_transcript(result):
                     return result
         data_id = _first_str([item.get("data_id")]).lower()
         if data_id.startswith("auto_sum:") or "summary" in data_id:
             content = _first_str([item.get("data_content"), item.get("content"), item.get("value"), item.get("text")])
             if content:
                 result = _unwrap_summary_text(content)
-                if result:
+                if result and not _looks_like_transcript(result):
                     return result
 
     return ""
@@ -212,14 +256,21 @@ def normalize(raw: Any) -> dict[str, Any]:
     rec_id = _first_str([detail.get("id"), detail.get("file_id")]) or "unknown"
     title = _first_str([detail.get("file_name"), detail.get("filename"), detail.get("title")])
 
+    summary = _extract_summary(detail)
+    transcript = _extract_transcript(detail)
+    # A "summary" that is really the transcript (mis-nested under a summary key)
+    # is not a summary.
+    if summary and transcript and _overlaps_transcript(summary, transcript):
+        summary = ""
+
     return {
         "id": rec_id,
         "file_id": file_id,
         "title": title,
         "start_time_ms": _as_nonneg_int(detail.get("start_time")),
         "duration_ms": _as_nonneg_int(detail.get("duration")),
-        "summary": _extract_summary(detail),
+        "summary": summary,
         "highlights": _extract_highlights(detail),
-        "transcript": _extract_transcript(detail),
+        "transcript": transcript,
         "raw": detail,
     }

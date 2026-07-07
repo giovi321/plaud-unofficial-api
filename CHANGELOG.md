@@ -6,9 +6,63 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-07-07
+
+Reliability pass on `sync` to stop transcripts silently going missing or being
+duplicated in downstream mirrors.
+
 ### Added
 - `--trash` on `list` and `sync` to include trashed recordings (the default still
   hides them).
+- **`--ready-timeout-days N`** — with `--only-ready`, a recording older than `N`
+  days is synced with whatever content is available instead of being withheld
+  forever when its AI summary never materialises. It is recorded as incomplete so
+  it still heals if the summary arrives later. `0` (default) keeps the old
+  wait-forever behaviour.
+
+### Changed
+- **`--only-ready` now requires *every* requested `--include` text type**, not just
+  "summary or highlights". Previously a recording whose transcript was ready but
+  whose summary never generated would either be skipped forever, or written as a
+  summary-less/near-empty note and frozen. Recordings are now retried until every
+  requested section is present (or `--ready-timeout-days` forces them through).
+- **Incomplete downloads are retried.** The registry records which sections were
+  present and a `complete` flag; an entry written before all requested sections
+  were ready is re-fetched on later runs and rewritten once they arrive. Legacy
+  entries with no `complete` key are treated as complete.
+- **Filenames are stable across re-downloads.** When a recording is re-fetched
+  (e.g. to heal an incomplete note), it keeps the filename from its registry entry
+  even if its title changed on the Plaud side — so downstream mirrors do not get a
+  second copy under the new name.
+- **Filename date uses the local timezone**, not UTC, so a recording started just
+  after midnight local time is dated the correct day (and lands in the right
+  month).
+- Truncated titles no longer leave a trailing space or dot before the extension
+  (Windows-hostile); an empty/whitespace title falls back to the `file_id`.
+- Same-name collisions (same day + identical or truncation-equal title) get a
+  short `file_id` suffix instead of silently overwriting the earlier recording.
+
+### Fixed
+- **Diarized transcript text is no longer mis-exported as the summary.** When a
+  Plaud payload nested raw transcript under generic summary keys, the `## Summary`
+  section filled with speaker-labelled transcript and falsely satisfied
+  `--only-ready`. The normalizer now drops a candidate summary only when it is
+  clearly transcript: dominated by explicit `Speaker N:` / timestamp lines, or
+  mostly verbatim lines from the transcript. Label-heavy genuine summaries
+  (`Date:`, `Attendees:`, `Action items:`) are kept — an earlier version of this
+  guard wrongly discarded them.
+- **A corrupt `.plaud_registry.json` no longer silently resets to empty** (which
+  re-downloaded everything and duplicated any re-titled recording downstream). A
+  copy is saved as `.corrupt-<timestamp>`, the original is left in place, and the
+  run aborts — so every subsequent run keeps failing loudly until a human fixes
+  it, rather than starting from an empty registry.
+- Control characters (tab/newline/CR) are stripped from filenames, so a stray
+  one in a Plaud title can no longer corrupt downstream tab-separated state.
+- Registry writes are now atomic (temp file + `os.replace`) and flushed after
+  every file, so a crash mid-run cannot corrupt the registry or forget files
+  already written to disk.
+- `sync` exits `2` when one or more recordings failed to download (previously it
+  exited `0`, so schedulers and wrappers saw success on partial failure).
 
 ### Removed
 - A dead code path that would have written transcripts to a separate `.txt` file.
