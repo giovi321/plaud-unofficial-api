@@ -192,3 +192,40 @@ def test_failed_download_exits_2(tmp_path, patch_client):
     c._make_client = lambda tok: client
     res = _run(tmp_path, [])
     assert res.exit_code == 2, f"partial failure must exit 2, got {res.exit_code}: {res.output}"
+
+
+def test_ready_requires_downloads_transcript_only_immediately(tmp_path, patch_client):
+    # transcript ready, summary missing. With --ready-requires transcript the
+    # recording must sync now (not wait for a summary) and stay incomplete so a
+    # later summary can heal it.
+    patch_client([_rec("f1")], {"f1": _detail("f1", transcript="Speaker 1: hi there")})
+    res = _run(tmp_path, ["--only-ready", "--ready-requires", "transcript"])
+    assert res.exit_code == 0, res.output
+    assert len(list(tmp_path.glob("*.md"))) == 1, "transcript-ready note must sync now"
+    reg = json.loads((tmp_path / cli.REGISTRY_FILENAME).read_text())
+    assert reg["f1"]["complete"] is False, "summary still missing -> not yet complete"
+
+
+def test_ready_requires_summary_still_exported_when_present(tmp_path, patch_client):
+    patch_client([_rec("f1")], {
+        "f1": _detail("f1", summary="We agreed on the plan.", transcript="Speaker 1: hi")
+    })
+    res = _run(tmp_path, ["--only-ready", "--ready-requires", "transcript"])
+    assert res.exit_code == 0, res.output
+    body = next(tmp_path.glob("*.md")).read_text()
+    assert "## Summary" in body and "We agreed on the plan." in body
+    reg = json.loads((tmp_path / cli.REGISTRY_FILENAME).read_text())
+    assert reg["f1"]["complete"] is True
+
+
+def test_ready_requires_aged_transcript_only_is_frozen_complete(tmp_path, patch_client):
+    # Old transcript-only recording: with a timeout it must be marked complete
+    # so it stops re-downloading every run.
+    old = _rec("f1", start_ms=1_600_000_000_000)
+    patch_client([old], {"f1": _detail("f1", transcript="Speaker 1: hi")})
+    res = _run(tmp_path, ["--only-ready", "--ready-requires", "transcript",
+                          "--ready-timeout-days", "5"])
+    assert res.exit_code == 0, res.output
+    assert len(list(tmp_path.glob("*.md"))) == 1
+    reg = json.loads((tmp_path / cli.REGISTRY_FILENAME).read_text())
+    assert reg["f1"]["complete"] is True, "aged transcript-only note must freeze complete"
