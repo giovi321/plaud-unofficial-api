@@ -4,6 +4,18 @@ Unofficial command-line tool for [plaud.ai](https://web.plaud.ai/) — reverse-e
 from the Plaud web app. Download your recordings, transcripts, AI summaries and
 highlights, and sync them to a local folder.
 
+<p align="center">
+  <a href="https://github.com/giovi321/plaud-unofficial-api/actions/workflows/docs.yml"><img src="https://github.com/giovi321/plaud-unofficial-api/actions/workflows/docs.yml/badge.svg" alt="Docs"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/python-3.9%2B-blue.svg" alt="Python 3.9+">
+</p>
+
+<p align="center">
+  <a href="https://giovi321.github.io/plaud-unofficial-api/"><img src="https://img.shields.io/badge/Read%20the%20docs-2ea44f?style=for-the-badge&logo=readthedocs&logoColor=white" alt="Read the docs"></a>
+</p>
+
+> **Documentation:** full docs are published at <https://giovi321.github.io/plaud-unofficial-api/>.
+
 > **Disclaimer** — This project is **not affiliated with or endorsed by Plaud AI**.
 > Use it solely with your own account and in compliance with Plaud's Terms of Service.
 >
