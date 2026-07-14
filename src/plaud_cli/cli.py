@@ -655,6 +655,15 @@ def _render_content(norm: dict[str, Any], fmt: str, includes: set[str] | None = 
          "withheld indefinitely.",
 )
 @click.option(
+    "--ready-requires", "ready_requires", multiple=True,
+    type=click.Choice(sorted(ALL_TEXT_TYPES), case_sensitive=False),
+    help="With --only-ready, only these text types must be present for a "
+         "recording to count as ready (default: every included text type). "
+         "Other included types are still exported when available but never "
+         "block the download, e.g. --ready-requires transcript syncs as soon "
+         "as the transcript is ready and adds a summary later if one appears.",
+)
+@click.option(
     "--include", "include_types", multiple=True,
     type=click.Choice(CONTENT_TYPES, case_sensitive=False),
     help="Content to include. Repeat to select multiple "
@@ -673,6 +682,7 @@ def sync(
     dry_run: bool,
     only_ready: bool,
     ready_timeout_days: int,
+    ready_requires: tuple[str, ...],
     include_types: tuple[str, ...],
 ) -> None:
     """Synchronise a local folder with your Plaud recordings.
@@ -699,6 +709,12 @@ def sync(
     includes = set(include_types) if include_types else ALL_TEXT_TYPES
     formatted_includes = includes & FORMATTED_TYPES
     want_recording = "recording" in includes
+    # Text types that must be present for --only-ready to release a recording.
+    # Default: every requested text type (strict). A subset (e.g. transcript)
+    # releases a recording as soon as those are ready; other included types are
+    # still exported when available but never block the download.
+    requested_text = formatted_includes or FORMATTED_TYPES
+    ready_required = ({t.lower() for t in ready_requires} & requested_text) or requested_text
     tok = _require_token(token)
     dest = pathlib.Path(output_dir)
 
@@ -824,15 +840,17 @@ def sync(
                 )
                 norm = normalizer.normalize(raw)
 
-                requested = formatted_includes or FORMATTED_TYPES
-                present = {t for t in requested if norm.get(t)}
-                if only_ready and present < requested:
-                    aged_out = False
-                    if ready_timeout_days and norm["start_time_ms"]:
-                        age_days = (now_ms - norm["start_time_ms"]) / 86_400_000
-                        aged_out = age_days >= ready_timeout_days
+                present = {t for t in requested_text if norm.get(t)}
+                aged_out = bool(
+                    ready_timeout_days and norm["start_time_ms"]
+                    and (now_ms - norm["start_time_ms"]) / 86_400_000 >= ready_timeout_days
+                )
+                if only_ready and not (present >= ready_required):
+                    # A type needed to call the recording ready is still
+                    # missing; release it early only once it has aged out (and
+                    # there is something to write).
                     if not (aged_out and present):
-                        missing = ", ".join(sorted(requested - present))
+                        missing = ", ".join(sorted(ready_required - present))
                         console.print(
                             f"  [yellow]–[/yellow] {fid}: skipped (not ready: {missing} missing)"
                         )
@@ -840,7 +858,7 @@ def sync(
                         continue
                     console.print(
                         f"  [yellow]![/yellow] {fid}: older than {ready_timeout_days}d — "
-                        f"syncing without: {', '.join(sorted(requested - present))}"
+                        f"syncing without: {', '.join(sorted(ready_required - present))}"
                     )
 
                 # Keep the filename stable across re-downloads of the same
@@ -886,7 +904,14 @@ def sync(
                         "filename": filename,
                         "downloaded_at": now_iso,
                         "sections": sorted(present),
-                        "complete": present >= requested,
+                        # Complete when everything wanted is present, or when the
+                        # recording has aged out with its required types in hand
+                        # (so a never-generated summary stops forcing endless
+                        # re-downloads of a transcript-only recording).
+                        "complete": bool(
+                            present >= requested_text
+                            or (aged_out and present >= ready_required)
+                        ),
                     }
                     # Save after every file: a crash mid-run must not forget
                     # what was already written to disk (a forgotten entry

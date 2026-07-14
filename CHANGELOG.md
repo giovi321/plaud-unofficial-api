@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-07-14
+
+### Added
+- **`--ready-requires TYPE`** — with `--only-ready`, only the listed text types
+  must be present for a recording to count as ready (default: every requested
+  `--include` text type, i.e. the previous strict behaviour). Other included
+  types are still exported when available but no longer block the download. This
+  lets a transcript-only template sync as soon as its transcript is ready
+  (`--ready-requires transcript`) instead of being withheld waiting for a summary
+  it will never produce, while summary-bearing recordings still get their summary.
+
+### Changed
+- **Completeness accounts for aged-out optional sections.** A recording missing
+  only a non-required section (e.g. a summary that never generates) is still
+  recorded incomplete so it heals if the section appears, but once it passes
+  `--ready-timeout-days` it is frozen complete — so transcript-only recordings no
+  longer re-download every run forever. Default (`--ready-requires` unset)
+  behaviour is unchanged.
+
 ## [2.1.0] - 2026-07-07
 
 Reliability pass on `sync` to stop transcripts silently going missing or being
