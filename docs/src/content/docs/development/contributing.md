@@ -27,7 +27,7 @@ pip install -e '.[dev]'      # installs pytest alongside the runtime deps
 python -m pytest -q
 ```
 
-The suite covers the sync readiness gate and exit codes, the registry/completeness logic, filename handling, regional routing, and the summary-vs-transcript normalizer guard. If you touch `sync` readiness or the normalizer, add or update a test — those areas have subtle behaviour (e.g. the guard that must drop diarized transcript mis-nested under a summary key without discarding genuine label-heavy summaries).
+The suite covers the sync readiness gate and exit codes, the registry/completeness logic, filename handling, regional routing, the transient-failure retry policy, and the summary-vs-transcript normalizer guard. If you touch `sync` readiness or the normalizer, add or update a test — those areas have subtle behaviour (e.g. the guard that must drop diarized transcript mis-nested under a summary key without discarding genuine label-heavy summaries).
 
 ## Conventions
 

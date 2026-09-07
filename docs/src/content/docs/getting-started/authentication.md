@@ -31,7 +31,27 @@ plaud login                 # prompts for the token (hidden input)
 plaud login --token "bearer eyJ..."
 ```
 
-To capture a token from the browser, open `web.plaud.ai`, sign in, and copy the bearer token from an authenticated API request in the developer tools network tab. See the project README section "Obtaining your token" for the current steps.
+### Capturing one from the browser
+
+Each token carries a `region: aws:<region>` claim, and the CLI routes to the matching host automatically (see [How the API works](/plaud-unofficial-api/guides/how-it-works/)).
+
+1. Open [web.plaud.ai](https://web.plaud.ai/) and log in. Confirm your recordings load.
+2. Open **Developer Tools** (`F12` on Windows/Linux, `Cmd+Opt+I` on macOS) and go to **Console**.
+3. Paste this. It scans the app's stored values, picks the **freshest non-expired** access token (skipping profile blobs and stale tokens), and copies it to your clipboard:
+
+   ```js
+   copy(Object.values(localStorage)
+     .flatMap(v => (v && v.match(/eyJ[\w-]+\.[\w-]+\.[\w-]+/g)) || [])
+     .map(t => { try { const p = JSON.parse(atob(t.split('.')[1].replace(/-/g,'+').replace(/_/g,'/'))); return p.exp*1000 > Date.now() ? { t, iat: p.iat || 0 } : null; } catch (e) { return null; } })
+     .filter(Boolean).sort((a, b) => b.iat - a.iat)[0]?.t);
+   ```
+
+   Your clipboard now holds a `eyJ...` JWT. Older app builds also expose it as `localStorage.getItem("tokenstr")`. If the one-liner returns nothing, use the **Network** tab, pick any `api-*.plaud.ai` request, and read `authorization: Bearer ...`.
+4. Load it with `plaud login` and paste at the prompt, or put it in `config.yaml`.
+
+:::caution[Not auto-refreshed]
+A browser-captured token is short-lived (~24h) and is **not** refreshed. For unattended use, prefer credential login above.
+:::
 
 ## Automatic token refresh
 

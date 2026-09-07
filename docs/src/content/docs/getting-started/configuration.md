@@ -40,7 +40,7 @@ Using the environment variables (with `plaud login --no-save-credentials`) keeps
 
 ## API base and regions
 
-`api_base` defaults to the discovery host `https://api.plaud.ai`. You normally do not set it manually: the client derives the correct regional host from your token and follows any region-mismatch redirect the API returns. See [Content extraction](/plaud-unofficial-api/guides/extraction/) for what the client does with the responses, and the project README "How the API works" for the regional routing details.
+`api_base` defaults to the discovery host `https://api.plaud.ai`. You normally do not set it manually: the client derives the correct regional host from your token and follows any region-mismatch redirect the API returns. See [Content extraction](/plaud-unofficial-api/guides/extraction/) for what the client does with the responses, and [How the API works](/plaud-unofficial-api/guides/how-it-works/) for the regional routing details.
 
 :::tip
 Only set `api_base` explicitly if you have a reason to pin a specific regional host. An explicit override is always respected; the default triggers automatic regional routing.
