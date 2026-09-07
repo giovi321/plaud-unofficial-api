@@ -39,7 +39,16 @@ A recording is considered already downloaded if its `file_id` is in the registry
 | Code | Meaning |
 | --- | --- |
 | `0` | Success. |
+| `1` | The run aborted before any recording was processed: no usable token, an unparseable `--since`, or the initial listing call failed after its retries. Counts are all zero. |
 | `2` | One or more recordings failed to download (partial failure). Wrappers can alert on this without treating the run as a hard failure. |
+
+## Transient failures
+
+Every API request retries connection and read timeouts, DNS failures, `429` and `5xx` three times, waiting 1s then 2s. Other `4xx` responses fail immediately.
+
+A request can therefore take up to roughly three times the 30s client timeout before it gives up. On a short scheduled cadence, guard the wrapper with a single-instance lock (`flock`) so a slow run delays the next one instead of overlapping it.
+
+Exit `1` from a network error means the failure outlasted the retries, not that a single packet was dropped.
 
 ## Typical scheduled run
 

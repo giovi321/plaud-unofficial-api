@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-09-07
+
+### Added
+- **Bounded retry with exponential backoff on transient API failures.** Every
+  request now retries connection/read errors, DNS failures, `429` and `5xx`
+  up to `RETRY_ATTEMPTS` times (3 by default), waiting 1s then 2s, capped at
+  8s. Applies to every call site: the credential login, `GET`/`POST` on the
+  data plane, signed content links, and recording downloads. `4xx` other than
+  `429` and malformed payloads still fail immediately.
+
+### Fixed
+- **`sync` no longer aborts the whole run on a single network blip.** A read
+  timeout on the first `list_files` call raised straight out and exited `1`
+  with nothing downloaded, which on a short unattended cron cadence produced
+  spurious failure alerts (~0.07% of runs, always self-healing on the next
+  one). The request is retried instead.
+- Stale `--version` output: the CLI reported `2.0.0` regardless of the
+  packaged version.
+
 ## [2.2.0] - 2026-07-14
 
 ### Added

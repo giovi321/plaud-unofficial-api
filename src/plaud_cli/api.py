@@ -3,11 +3,27 @@
 from __future__ import annotations
 
 import re
+import time
+from collections.abc import Callable
 from typing import Any
 
 import httpx
 
 API_BASE = "https://api.plaud.ai"
+
+# Retry policy for transient transport failures.
+#
+# WHY: unattended sync runs on a short cron cadence, and a single read timeout
+# used to abort the whole run with a hard error (exit 1) even though the run a
+# minute later succeeded. Read timeouts, DNS blips, 429 and 5xx are all worth a
+# second attempt; 4xx and malformed payloads are not and must stay fast.
+#
+# Worst case per request is attempts * client timeout + backoff (~93s at the
+# defaults). That is deliberate: callers are expected to be single-instance
+# guarded, so a slow run delays the next one rather than overlapping it.
+RETRY_ATTEMPTS = 3
+RETRY_BACKOFF = 1.0     # seconds before the first retry, doubled thereafter
+RETRY_MAX_SLEEP = 8.0   # cap on a single backoff wait
 
 
 class PlaudApiError(Exception):
@@ -23,6 +39,45 @@ def _normalize_token(token: str) -> str:
     token = token.strip()
     token = re.sub(r"^bearer\s+", "", token, flags=re.IGNORECASE)
     return token
+
+
+def _is_retryable_status(http_status: int) -> bool:
+    """True for statuses that a later attempt could plausibly succeed on."""
+    return http_status == 429 or http_status >= 500
+
+
+def _send_with_retry(
+    send: Callable[[], httpx.Response],
+    *,
+    attempts: int = RETRY_ATTEMPTS,
+    sleep: Callable[[float], None] | None = None,
+) -> httpx.Response:
+    """Perform an HTTP request, retrying transient failures with backoff.
+
+    ``send`` is a zero-argument callable returning an ``httpx.Response``.
+    Connection/read errors and retryable status codes are retried; anything
+    else returns immediately. Once the attempts are spent the last exception
+    propagates (or the last response is returned) so each caller's own error
+    mapping stays in charge of the message the user sees.
+
+    ``sleep`` defaults to ``time.sleep`` resolved at call time, so tests can
+    neutralise the backoff by patching the module's ``time``.
+    """
+    wait = sleep if sleep is not None else time.sleep
+    delay = RETRY_BACKOFF
+    for remaining in range(max(1, attempts) - 1, -1, -1):
+        try:
+            resp = send()
+        except httpx.RequestError:
+            if not remaining:
+                raise
+        else:
+            if not remaining or not _is_retryable_status(resp.status_code):
+                return resp
+        wait(min(delay, RETRY_MAX_SLEEP))
+        delay *= 2
+    # Unreachable: the final iteration always returns or raises.
+    raise PlaudApiError("network", "Request failed after retries.")
 
 
 # Plaud splits accounts across dedicated regional API hosts. The host is
@@ -187,7 +242,9 @@ def _authenticate(http: httpx.Client, email: str, password: str, base: str) -> s
     form = {"username": email, "password": password}
     for attempt in range(2):
         try:
-            resp = http.post(f"{base}/auth/access-token", data=form)
+            resp = _send_with_retry(
+                lambda: http.post(f"{base}/auth/access-token", data=form)
+            )
         except httpx.RequestError as exc:
             raise PlaudApiError("network", f"Network error: {exc}") from exc
         if resp.status_code >= 400:
@@ -315,7 +372,7 @@ class PlaudClient:
 
     def _get(self, path: str, *, _redirected: bool = False) -> Any:
         try:
-            resp = self._http.get(f"{self._base}{path}")
+            resp = _send_with_retry(lambda: self._http.get(f"{self._base}{path}"))
         except httpx.RequestError as exc:
             raise PlaudApiError("network", f"Network error: {exc}") from exc
         if resp.status_code >= 400:
@@ -331,7 +388,9 @@ class PlaudClient:
 
     def _post(self, path: str, json_body: Any = None, *, _redirected: bool = False) -> Any:
         try:
-            resp = self._http.post(f"{self._base}{path}", json=json_body)
+            resp = _send_with_retry(
+                lambda: self._http.post(f"{self._base}{path}", json=json_body)
+            )
         except httpx.RequestError as exc:
             raise PlaudApiError("network", f"Network error: {exc}") from exc
         if resp.status_code >= 400:
@@ -359,7 +418,7 @@ class PlaudClient:
     def _fetch_url(self, url: str) -> Any:
         """Fetch an arbitrary URL (used for signed content links)."""
         try:
-            resp = self._http.get(url)
+            resp = _send_with_retry(lambda: self._http.get(url))
             resp.raise_for_status()
             try:
                 return resp.json()
@@ -418,7 +477,7 @@ class PlaudClient:
         if not link:
             raise PlaudApiError("not_found", "No recording download link found for this file.")
         try:
-            resp = self._http.get(link)
+            resp = _send_with_retry(lambda: self._http.get(link))
             resp.raise_for_status()
         except httpx.HTTPStatusError as exc:
             raise PlaudApiError("network", f"HTTP {exc.response.status_code}") from exc
