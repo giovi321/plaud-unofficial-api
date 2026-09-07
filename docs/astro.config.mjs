@@ -21,6 +21,7 @@ export default defineConfig({
             { label: 'Installation', link: '/getting-started/installation/' },
             { label: 'Authentication', link: '/getting-started/authentication/' },
             { label: 'Configuration', link: '/getting-started/configuration/' },
+            { label: 'Upgrading', link: '/getting-started/upgrading/' },
           ],
         },
         {
@@ -37,6 +38,9 @@ export default defineConfig({
           items: [
             { label: 'Sync readiness', link: '/guides/readiness/' },
             { label: 'Content extraction', link: '/guides/extraction/' },
+            { label: 'Unattended sync', link: '/guides/unattended-sync/' },
+            { label: 'How the API works', link: '/guides/how-it-works/' },
+            { label: 'Troubleshooting', link: '/guides/troubleshooting/' },
           ],
         },
         {
