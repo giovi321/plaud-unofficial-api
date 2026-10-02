@@ -471,26 +471,49 @@ class PlaudClient:
         detail = self.get_file_detail(file_id)
         return self._hydrate(detail)
 
+    def get_audio_url(self, file_id: str) -> str:
+        """Return a short-lived signed S3 URL for the recording's audio."""
+        from urllib.parse import quote
+        data = self._get(f"/file/temp-url/{quote(file_id, safe='')}")
+        url = data.get("temp_url") if isinstance(data, dict) else None
+        if not isinstance(url, str) or not url.strip():
+            raise PlaudApiError("not_found", "No recording download link found for this file.")
+        return url.strip()
+
     def download_recording(self, detail: dict[str, Any]) -> tuple[bytes, str]:
         """Download the recording audio file. Returns (bytes, suggested_extension)."""
         link = _pick_recording_link(detail)
         if not link:
-            raise PlaudApiError("not_found", "No recording download link found for this file.")
+            # The detail payload no longer lists the audio in content_list; the
+            # web app fetches it from /file/temp-url/{id} instead.
+            if detail.get("audio_deleted"):
+                raise PlaudApiError("not_found", "The recording's audio was deleted in Plaud.")
+            file_id = detail.get("file_id") or detail.get("id")
+            if not file_id:
+                raise PlaudApiError("not_found", "No recording download link found for this file.")
+            link = self.get_audio_url(str(file_id))
+        # A signed S3 link must be fetched WITHOUT the API's Bearer header: S3
+        # rejects a request carrying two auth mechanisms with HTTP 400.
         try:
-            resp = _send_with_retry(lambda: self._http.get(link))
+            with httpx.Client(timeout=300.0, follow_redirects=True) as signed:
+                resp = _send_with_retry(lambda: signed.get(link))
             resp.raise_for_status()
         except httpx.HTTPStatusError as exc:
             raise PlaudApiError("network", f"HTTP {exc.response.status_code}") from exc
         except httpx.RequestError as exc:
             raise PlaudApiError("network", f"Network error: {exc}") from exc
         content_type = resp.headers.get("content-type", "")
-        if "ogg" in content_type or link.endswith(".ogg"):
+        from urllib.parse import urlparse
+        path = urlparse(link).path.lower()   # the signed query string hides the extension
+        if "ogg" in content_type or path.endswith(".ogg"):
             ext = "ogg"
-        elif "wav" in content_type or link.endswith(".wav"):
+        elif "opus" in content_type or path.endswith(".opus"):
+            ext = "opus"
+        elif "wav" in content_type or path.endswith(".wav"):
             ext = "wav"
-        elif "mp3" in content_type or link.endswith(".mp3"):
+        elif "mpeg" in content_type or "mp3" in content_type or path.endswith(".mp3"):
             ext = "mp3"
-        elif "mp4" in content_type or "m4a" in content_type or link.endswith(".m4a"):
+        elif "mp4" in content_type or "m4a" in content_type or path.endswith(".m4a"):
             ext = "m4a"
         else:
             ext = "ogg"
