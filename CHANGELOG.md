@@ -6,6 +6,21 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.3.1] - 2026-10-02
+
+### Fixed
+- **Recording downloads work again.** `export --include recording` and
+  `sync --include recording` saved no audio and printed "No recording download
+  link found for this file" for every recording, because the detail payload no
+  longer lists the audio in `content_list`. The audio is now fetched from
+  `/file/temp-url/{id}` when `content_list` has no link, and a recording whose
+  audio was deleted in Plaud fails with a clear message instead.
+- **Signed audio links are fetched without the API's Bearer header.** S3
+  rejects a pre-signed request that also carries an `Authorization` header with
+  HTTP 400, so the download now uses a separate client with no auth headers.
+- The audio file extension is taken from the URL path, not the full URL, so
+  the signed query string no longer hides it. `.opus` is recognised.
+
 ## [2.3.0] - 2026-09-07
 
 ### Added
